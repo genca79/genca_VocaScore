@@ -1,0 +1,52 @@
+# Pubblicazione su GitHub Pages: a ogni push su "main" esegue i test, compila l'app con Vite
+# e pubblica la cartella dist/. L'app è statica: nessun server, tutto gira nel browser.
+name: Pubblica su GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # permette anche l'avvio manuale dalla scheda Actions
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Una sola pubblicazione alla volta; quella più recente sostituisce quelle in coda.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Installa le dipendenze
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Compila
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

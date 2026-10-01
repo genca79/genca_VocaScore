@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GENCA VocaScore</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f2328'/%3E%3Cpath d='M20 6v14.5a4 4 0 1 1-2-3.46V10h-6V6z' fill='%23e8590c'/%3E%3C/svg%3E"
+    />
+    <meta name="description" content="Dalla voce allo spartito in tempo reale, interamente nel tuo browser." />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1><span class="brand-prefix">GENCA</span> Voca<span>Score</span></h1>
+      <p class="tagline">Canta: la tua voce diventa nota, suono e spartito. Tutto resta nel tuo browser.</p>
+    </header>
+
+    <main class="app">
+      <section class="panel controls" aria-label="Controlli">
+        <button id="mic-toggle" class="btn-primary" type="button" aria-pressed="false">Avvia microfono</button>
+
+        <div class="rec-settings" aria-label="Impostazioni di registrazione">
+          <label class="field">
+            <span>BPM</span>
+            <input id="bpm" type="number" step="1" inputmode="numeric" />
+          </label>
+          <label class="field">
+            <span>Tempo</span>
+            <select id="time-signature"></select>
+          </label>
+          <label class="field">
+            <span>Chiave</span>
+            <select id="clef">
+              <option value="auto" title="Scelta in base all'estensione della voce">Auto</option>
+              <option value="treble">Violino</option>
+              <option value="bass">Basso</option>
+            </select>
+          </label>
+          <label class="field" title="Risoluzione ritmica della registrazione: inizi e fini delle note vengono agganciati a questa griglia">
+            <span>Quantizzazione</span>
+            <select id="grid"></select>
+          </label>
+          <label class="switch rec-metronome" title="Click e battuta di attacco durante la registrazione: allinea il canto alle battute">
+            <input id="metronome" type="checkbox" />
+            <span>Metronomo</span>
+          </label>
+        </div>
+
+        <div class="status-row">
+          <p id="status" class="status" role="status" aria-live="polite">Microfono spento</p>
+          <div id="beat-indicator" class="beat-indicator" aria-hidden="true" hidden></div>
+        </div>
+        <p id="error" class="error" role="alert" hidden></p>
+
+        <div class="feedback">
+          <label class="switch">
+            <input id="headphones" type="checkbox" />
+            <span>Suona synth mentre canti (solo con cuffie)</span>
+          </label>
+          <span id="output-badge" class="badge">Synth muto</span>
+          <p id="feedback-reason" class="hint"></p>
+        </div>
+      </section>
+
+      <section class="panel live" aria-label="Nota rilevata">
+        <div class="note-display">
+          <div id="note-name" class="note-name">–</div>
+          <div class="note-meta">
+            <span id="note-hz">— Hz</span>
+            <span id="note-cents"></span>
+          </div>
+        </div>
+
+        <div class="tuner" aria-hidden="true">
+          <div class="tuner-scale"><span>−50</span><span>0</span><span>+50</span></div>
+          <div id="tuner-needle" class="tuner-needle"></div>
+        </div>
+
+        <div class="meter-row">
+          <span id="gate-led" class="gate-led" title="Noise gate"></span>
+          <div class="meter" aria-hidden="true">
+            <div id="meter-fill" class="meter-fill"></div>
+            <div id="meter-threshold" class="meter-threshold" title="Soglia del noise gate"></div>
+          </div>
+          <span id="meter-label" class="meter-label" title="Livello attuale / soglia del gate">Livello</span>
+        </div>
+      </section>
+
+      <section class="panel sound-panel" aria-label="Suono">
+        <div class="panel-header">
+          <h2>Suono</h2>
+          <button id="preview-sound" class="btn-secondary" type="button">Prova suono</button>
+        </div>
+        <div class="sound-grid">
+          <label class="field">
+            <span>Strumento</span>
+            <select id="instrument"></select>
+          </label>
+          <label class="field">
+            <span>Ottava</span>
+            <select id="octave">
+              <option value="-2">−2</option>
+              <option value="-1">−1</option>
+              <option value="0">0</option>
+              <option value="1">+1</option>
+              <option value="2">+2</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Brillantezza</span>
+            <input id="brightness" type="range" min="0" max="1" step="0.01" />
+          </label>
+          <label class="field">
+            <span>Riverbero</span>
+            <input id="reverb" type="range" min="0" max="1" step="0.01" />
+          </label>
+          <label class="field">
+            <span>Volume</span>
+            <input id="volume" type="range" min="-40" max="0" step="1" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel score-panel" aria-label="Spartito">
+        <div class="panel-header">
+          <input
+            id="score-title"
+            class="score-title"
+            type="text"
+            maxlength="120"
+            placeholder="Titolo dello spartito"
+            aria-label="Titolo dello spartito"
+          />
+          <div class="panel-actions">
+            <button id="play-score" class="btn-secondary btn-play" type="button" disabled
+              title="Riascolta lo spartito (dalla nota selezionata, se c'è)">▶ Riascolta</button>
+            <button id="new-score" class="btn-secondary" type="button" title="Nuovo spartito (annullabile con Ctrl+Z)">Nuovo</button>
+            <button id="open-score" class="btn-secondary" type="button">Apri…</button>
+            <input id="open-file" type="file" accept=".json,application/json" hidden />
+            <button id="save-score" class="btn-secondary" type="button"
+              title="Salva lo spartito modificabile (.vocascore.json), da riaprire con Apri…">Salva</button>
+            <button id="export-musicxml" class="btn-secondary" type="button"
+              title="Esporta in MusicXML per MuseScore, Finale, Sibelius, Dorico…">MusicXML</button>
+            <button id="export-pdf" class="btn-secondary" type="button"
+              title="Crea un PDF con titolo e pentagrammi">PDF</button>
+          </div>
+        </div>
+
+        <div class="score-settings">
+          <label class="switch">
+            <input id="note-names" type="checkbox" />
+            <span>Nomi delle note</span>
+          </label>
+        </div>
+
+        <div id="edit-toolbar" class="edit-toolbar" role="toolbar" aria-label="Modifica dello spartito">
+          <div class="tool-group">
+            <button type="button" data-action="undo" title="Annulla (Ctrl+Z)">↶ Annulla</button>
+            <button type="button" data-action="redo" title="Ripeti (Ctrl+Y)">↷ Ripeti</button>
+          </div>
+          <div class="tool-group" aria-label="Altezza">
+            <button type="button" data-action="transpose" data-value="1" data-needs-selection title="Su di un semitono (↑)">▲ ½</button>
+            <button type="button" data-action="transpose" data-value="-1" data-needs-selection title="Giù di un semitono (↓)">▼ ½</button>
+            <button type="button" data-action="transpose" data-value="12" data-needs-selection title="Su di un'ottava (Shift+↑)">▲ 8va</button>
+            <button type="button" data-action="transpose" data-value="-12" data-needs-selection title="Giù di un'ottava (Shift+↓)">▼ 8va</button>
+          </div>
+          <div class="tool-group" aria-label="Durata">
+            <button type="button" data-action="figure" data-value="0.25" data-needs-selection title="Semicroma (1)">1/16</button>
+            <button type="button" data-action="figure" data-value="0.5" data-needs-selection title="Croma (2)">1/8</button>
+            <button type="button" data-action="figure" data-value="1" data-needs-selection title="Semiminima (3)">1/4</button>
+            <button type="button" data-action="figure" data-value="2" data-needs-selection title="Minima (4)">1/2</button>
+            <button type="button" data-action="figure" data-value="4" data-needs-selection title="Semibreve (5)">1</button>
+            <button type="button" data-action="dot" data-needs-selection title="Punto di valore (.)">Punto</button>
+          </div>
+          <div class="tool-group">
+            <button type="button" data-action="rest" data-needs-selection title="Trasforma in pausa / in nota (R)">Nota → pausa</button>
+            <button type="button" data-action="duplicate" data-needs-selection title="Duplica (D)">Duplica</button>
+            <button type="button" data-action="delete" data-needs-selection title="Elimina (Canc)">Elimina</button>
+          </div>
+        </div>
+        <p class="selection-row">
+          <span id="selection-info" class="selection-info"></span>
+          <span id="score-status" class="score-status" role="status" aria-live="polite"></span>
+        </p>
+
+        <div id="score" class="score"></div>
+        <p class="hint shortcuts">
+          Tastiera: ← → seleziona · ↑ ↓ semitono · Shift+↑ ↓ ottava · 1–5 durata · . punto · R nota/pausa ·
+          D duplica · Canc elimina · Esc deseleziona · Ctrl+Z / Ctrl+Y annulla/ripeti
+        </p>
+      </section>
+    </main>
+
+    <footer class="app-footer">Nessun audio lascia il tuo dispositivo: elaborazione 100% locale.</footer>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

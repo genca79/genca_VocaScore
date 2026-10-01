@@ -1,0 +1,554 @@
+:root {
+  --bg: #f6f4ef;
+  --panel: #ffffff;
+  --ink: #1f2328;
+  --muted: #6a6f76;
+  --line: #e3dfd6;
+  --accent: #e8590c;
+  --ok: #2f9e44;
+  --danger: #c92a2a;
+  --radius: 14px;
+  color-scheme: light;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 24px 16px 40px;
+  background: var(--bg);
+}
+
+.app-header,
+.app,
+.app-footer {
+  max-width: 960px;
+  margin-inline: auto;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 2rem;
+  letter-spacing: -0.02em;
+}
+
+.app-header h1 span {
+  color: var(--accent);
+}
+
+.app-header h1 .brand-prefix {
+  margin-right: 0.15em;
+  color: var(--ink);
+  letter-spacing: 0.04em;
+}
+
+.tagline {
+  margin: 4px 0 20px;
+  color: var(--muted);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.score-panel,
+.sound-panel {
+  grid-column: 1 / -1;
+}
+
+.panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ── Suono ─────────────────────────────────────────────── */
+.sound-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px 20px;
+  margin-top: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field select,
+.field input[type='range'] {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  accent-color: var(--accent);
+}
+
+.field select {
+  padding: 7px 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+/* ── Controlli ─────────────────────────────────────────── */
+.btn-primary {
+  width: 100%;
+  padding: 14px 18px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--ink);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-primary.is-running {
+  background: var(--danger);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-secondary {
+  padding: 6px 14px;
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-play.is-playing {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Impostazioni di registrazione, sotto "Avvia microfono" */
+.rec-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  align-items: end;
+  gap: 10px 12px;
+  margin-top: 14px;
+}
+
+.rec-settings input[type='number'],
+.rec-settings select {
+  width: 100%;
+  padding: 7px 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.rec-settings :disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rec-metronome {
+  padding-bottom: 8px; /* allinea la casella alla base dei campi accanto */
+}
+
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.beat-indicator {
+  display: flex;
+  gap: 6px;
+}
+
+.beat-dot {
+  width: 14px;
+  height: 14px;
+  background: var(--line);
+  border-radius: 50%;
+  transition: background 40ms, transform 40ms;
+}
+
+.beat-dot.is-on {
+  background: var(--ok);
+  transform: scale(1.25);
+}
+
+.beat-dot.is-on.is-accent {
+  background: var(--accent);
+}
+
+.beat-indicator.is-count-in .beat-dot.is-on {
+  background: var(--ink);
+}
+
+.error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  color: var(--danger);
+  background: #fff5f5;
+  border: 1px solid #ffc9c9;
+  border-radius: 8px;
+}
+
+.feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.switch input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.badge {
+  padding: 2px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 999px;
+}
+
+.badge.is-on {
+  color: #fff;
+  background: var(--ok);
+}
+
+.hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.hint.is-warning {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ── Nota live ─────────────────────────────────────────── */
+.note-display {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.note-name {
+  min-width: 3ch;
+  font-size: 3.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.note-meta {
+  display: flex;
+  flex-direction: column;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tuner {
+  position: relative;
+  height: 56px;
+  margin: 18px 0 12px;
+  border-bottom: 2px solid var(--line);
+}
+
+.tuner-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.tuner-needle {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  height: 40px;
+  background: var(--accent);
+  border-radius: 2px;
+  transform-origin: bottom center;
+  transform: translateX(-50%) rotate(0deg);
+  transition: transform 60ms linear;
+}
+
+.tuner-needle.is-in-tune {
+  background: var(--ok);
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.meter {
+  position: relative;
+  flex: 1;
+  height: 10px;
+  overflow: hidden;
+  background: var(--bg);
+  border-radius: 999px;
+}
+
+.meter-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--ok), var(--accent));
+}
+
+.meter-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink);
+  opacity: 0.5;
+}
+
+.meter-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.gate-led {
+  width: 12px;
+  height: 12px;
+  background: var(--line);
+  border-radius: 50%;
+}
+
+.gate-led.is-open {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+/* ── Spartito ──────────────────────────────────────────── */
+.score-title {
+  flex: 1 1 240px;
+  min-width: 0;
+  padding: 4px 0;
+  font: inherit;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+}
+
+.score-title:hover,
+.score-title:focus {
+  border-bottom-color: var(--line);
+  outline: none;
+}
+
+.score-title:focus-visible {
+  border-bottom-color: var(--accent);
+}
+
+.panel-actions {
+  flex-wrap: wrap;
+}
+
+.score-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+  margin-top: 14px;
+}
+
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-inline input[type='number'] {
+  width: 5.5em;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.field-inline select {
+  width: auto;
+}
+
+/* ── Barra di modifica ─────────────────────────────────── */
+.edit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 14px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: 10px;
+}
+
+.tool-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tool-group button {
+  min-width: 2.6em;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.tool-group button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tool-group button.is-active {
+  color: #fff;
+  background: #1971c2;
+  border-color: #1971c2;
+}
+
+.tool-group button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.selection-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-height: 1.3em;
+  margin: 10px 0 4px;
+  font-size: 0.85rem;
+}
+
+.selection-info {
+  color: var(--muted);
+}
+
+.score-status {
+  color: var(--ok);
+}
+
+.score-status.is-error {
+  color: var(--danger);
+}
+
+.shortcuts {
+  margin-top: 8px;
+}
+
+/* ── Spartito ──────────────────────────────────────────── */
+.score {
+  width: 100%;
+  min-height: 190px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.score svg {
+  display: block;
+}
+
+/* Le note sono cliccabili: VexFlow mette un rettangolo trasparente sopra ogni nota. */
+.score [data-note-id] {
+  cursor: pointer;
+}
+
+.app-footer {
+  margin-top: 24px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: center;
+}
