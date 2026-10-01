@@ -116,12 +116,69 @@ describe('Recorder: note mancanti o in più', () => {
     expect(written(doc)).toEqual([[null, 2], [72, 0.5]]);
   });
 
-  it('i silenzi brevi restano al loro posto invece di sparire', () => {
-    const { doc, rec } = setup();
+  it('con "Note legate" spento i silenzi brevi restano pause al loro posto', () => {
+    const { doc, rec } = setup({ legato: false });
     rec.beginSession(0);
     sing(rec, 60, 0, 1.5 * BEAT); // nota da 1.5
     sing(rec, 62, 2 * BEAT, 3 * BEAT); // dopo una pausa di croma
     expect(written(doc)).toEqual([[60, 1.5], [null, 0.5], [62, 1]]);
+  });
+});
+
+describe('Recorder: note legate', () => {
+  /** 8 semiminime cantate staccate: ognuna suona per il 55% del movimento. */
+  function staccato(rec) {
+    rec.beginSession(0);
+    for (let i = 0; i < 8; i++) sing(rec, 60 + (i % 3), i * BEAT + 10, i * BEAT + 0.55 * BEAT);
+  }
+
+  it('REGRESSIONE: semiminime staccate restano semiminime (non croma + pausa)', () => {
+    const { doc, rec } = setup();
+    staccato(rec);
+    expect(doc.notes).toHaveLength(8); // nessuna pausa
+    // tutte semiminime; l'ultima non ha una nota successiva fino a cui allungarsi: resta come cantata
+    expect(written(doc).slice(0, 7).every(([midi, beats]) => midi !== null && beats === 1)).toBe(true);
+    expect(written(doc).at(-1)).toEqual([60 + (7 % 3), 0.5]);
+  });
+
+  it('con "Note legate" spento si scrive la durata esatta come cantata', () => {
+    const { doc, rec } = setup({ legato: false });
+    staccato(rec);
+    expect(written(doc).slice(0, 4)).toEqual([[60, 0.5], [null, 0.5], [61, 0.5], [null, 0.5]]);
+  });
+
+  it('un respiro vero tra due frasi (un movimento) resta una pausa', () => {
+    const { doc, rec } = setup();
+    rec.beginSession(0);
+    sing(rec, 60, 0, 2 * BEAT); // minima
+    sing(rec, 62, 3 * BEAT, 4 * BEAT); // dopo un movimento di silenzio
+    expect(written(doc)).toEqual([[60, 2], [null, 1], [62, 1]]);
+  });
+
+  it('una nota brevissima seguita da un silenzio più lungo di lei resta staccata', () => {
+    const { doc, rec } = setup({ grid: 0.25 });
+    rec.beginSession(0);
+    sing(rec, 72, 0, 0.25 * BEAT); // semicroma
+    sing(rec, 72, 0.75 * BEAT, BEAT); // dopo una pausa di croma
+    expect(written(doc)).toEqual([[72, 0.25], [null, 0.5], [72, 0.25]]);
+  });
+
+  it('con griglia 1/4 il silenzio tollerato è di un movimento', () => {
+    const { doc, rec } = setup({ grid: 1 });
+    rec.beginSession(0);
+    sing(rec, 60, 0, 1.4 * BEAT); // agganciata a 1 movimento
+    sing(rec, 62, 2 * BEAT, 3 * BEAT);
+    expect(written(doc)).toEqual([[60, 2], [62, 1]]);
+  });
+
+  it('anche la rifinitura (Recorder.quantize) scrive note legate', () => {
+    const session = { t0Raw: 0, settings: { bpm: 90, grid: 0.5, timeSignature: '4/4', legato: true } };
+    const notes = [0, 1, 2].map((i) => ({ midi: 64, startMs: i * BEAT, endMs: i * BEAT + 0.5 * BEAT, transition: false }));
+    expect(Recorder.quantize(notes, session)).toEqual([
+      { midi: 64, beats: 1 },
+      { midi: 64, beats: 1 },
+      { midi: 64, beats: 0.5 },
+    ]);
   });
 });
 
@@ -153,7 +210,11 @@ describe('Recorder.quantize (scrittura della rifinitura)', () => {
     sing(rec, 60, 0, 3 * BEAT - 50);
     rec.endSession();
     rec.beginSession(5000);
-    expect(rec.sessionInfo).toEqual({ startIndex: 2, t0Raw: 5000, settings: { bpm: 90, grid: 0.5, timeSignature: '4/4' } });
+    expect(rec.sessionInfo).toEqual({
+      startIndex: 2,
+      t0Raw: 5000,
+      settings: { bpm: 90, grid: 0.5, timeSignature: '4/4', legato: true },
+    });
     expect(doc.notes).toHaveLength(2); // nota + pausa di completamento
   });
 });

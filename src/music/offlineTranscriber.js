@@ -2,6 +2,7 @@ import { detectPitchMPM } from '../audio/pitchDetector.js';
 import { computeRms, rmsToDb } from '../audio/noiseGate.js';
 import { hzToMidi } from './noteUtils.js';
 import { circularMeanOffset } from './tuning.js';
+import { median, vibratoCenter } from './pitchCenter.js';
 
 /**
  * Trascrizione OFFLINE di una registrazione completa (eseguita in un Web Worker dopo lo Stop).
@@ -159,9 +160,9 @@ function estimateTuning(frames, o) {
   const centers = [];
   const weights = [];
   for (const note of notes) {
-    const values = stableValues(note, frames, 0);
+    const { values, times } = stableValues(note, frames, 0);
     if (values.length < 8) continue; // note troppo brevi: centro poco affidabile
-    centers.push(median(values));
+    centers.push(vibratoCenter(values, times));
     weights.push(values.length);
   }
   if (centers.length < 3) return 0;
@@ -170,14 +171,22 @@ function estimateTuning(frames, o) {
   return Math.max(-o.maxTuningOffset, Math.min(o.maxTuningOffset, offset));
 }
 
-/** Pitch (corretto di `offset`) della parte stabile di una nota: senza attacco (20%) e coda (10%). */
+/**
+ * Pitch (corretto di `offset`) della parte stabile di una nota, con i tempi in ms:
+ * senza attacco (20%, max 100 ms) e coda (10%, max 40 ms).
+ */
 function stableValues(note, frames, offset) {
   const len = note.i1 - note.i0 + 1;
-  const skipStart = Math.min(Math.floor(len * 0.2), 6);
+  const skipStart = Math.min(Math.floor(len * 0.2), 10);
   const skipEnd = Math.min(Math.floor(len * 0.1), 4);
   const values = [];
-  for (let i = note.i0 + skipStart; i <= note.i1 - skipEnd; i++) if (!Number.isNaN(frames[i].p)) values.push(frames[i].p - offset);
-  return values;
+  const times = [];
+  for (let i = note.i0 + skipStart; i <= note.i1 - skipEnd; i++) {
+    if (Number.isNaN(frames[i].p)) continue;
+    values.push(frames[i].p - offset);
+    times.push(frames[i].t * 1000);
+  }
+  return { values, times };
 }
 
 // ── 5. Segmentazione con Viterbi ───────────────────────────────────────────
@@ -331,11 +340,14 @@ function splitSyllables(notes, frames, o) {
 // ── 7. Altezza definitiva di ogni nota ─────────────────────────────────────
 function refinePitch(notes, frames, offset) {
   for (const note of notes) {
-    const values = stableValues(note, frames, offset);
-    if (values.length === 0) {
-      for (let i = note.i0; i <= note.i1; i++) if (!Number.isNaN(frames[i].p)) values.push(frames[i].p - offset);
+    const { values, times } = stableValues(note, frames, offset);
+    if (values.length > 0) {
+      note.midi = Math.round(vibratoCenter(values, times));
+      continue;
     }
-    if (values.length > 0) note.midi = Math.round(median(values));
+    const all = [];
+    for (let i = note.i0; i <= note.i1; i++) if (!Number.isNaN(frames[i].p)) all.push(frames[i].p - offset);
+    if (all.length > 0) note.midi = Math.round(median(all));
   }
 }
 
@@ -380,10 +392,4 @@ function cleanUp(notes, o) {
     else merged.push(n);
   }
   return merged;
-}
-
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }

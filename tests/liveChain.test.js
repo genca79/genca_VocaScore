@@ -76,6 +76,34 @@ describe('catena dal vivo', () => {
     expect(correct(runLive(audio, { tuning: false }))).toBeLessThan(correct(runLive(audio)));
   });
 
+  it('REGRESSIONE: note staccate con ronzio di fondo (100 Hz, −67 dB) → nessuna nota fantasma, altezze giuste', () => {
+    // Il ronzio tiene aperto il gate nelle pause brevi: prima la nota successiva veniva annunciata
+    // con l'altezza della precedente, e dopo il canto il ronzio diventava una nota (Sol#2).
+    const BEAT_S = 60 / 90;
+    const pitches = [60, 62, 64, 65, 67, 69, 67, 65];
+    const melody = pitches.map((midi, i) => ({ midi, start: 1 + i * BEAT_S, end: 1 + i * BEAT_S + 0.55 * BEAT_S, vibrato: 0.2 }));
+    const signal = synthVoice(melody, SR, { tail: 2, hum: { hz: 100, db: -67 } });
+    const N = CONFIG.audio.fftSize;
+    const gate = new NoiseGate(CONFIG.gate);
+    const stab = new NoteStabilizer(CONFIG.stabilizer);
+    const ons = [];
+    const offs = [];
+    for (let end = N; end <= signal.length; end += 800) {
+      const buf = signal.subarray(end - N, end);
+      const ms = (end / SR) * 1000;
+      const db = rmsToDb(computeRms(buf));
+      const open = gate.process(db, ms);
+      let midi = null;
+      if (open) {
+        const r = detectPitchMPM(buf, SR, CONFIG.pitch);
+        if (r && r.clarity >= CONFIG.pitch.minClarity) midi = hzToMidi(r.hz);
+      }
+      for (const ev of stab.process(midi, ms, open, db)) (ev.type === 'noteOn' ? ons : offs).push(ev.midi);
+    }
+    expect(offs).toEqual(pitches);
+    expect(ons).toEqual(pitches); // annunciate già con l'altezza giusta (synth e anteprima corretti)
+  });
+
   it('anche a 144 fps', () => {
     expect(runLive(audioInTune, { fps: 144 })).toEqual(TEST_MELODY_EXPECTED);
   });

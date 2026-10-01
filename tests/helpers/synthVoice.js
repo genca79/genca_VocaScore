@@ -9,9 +9,10 @@ import { midiToHz } from '../../src/music/noteUtils.js';
  *                 dips?:number[], drift?:number, offset?:number }>} notes tempi in secondi;
  *   offset = stonatura propria della nota (semitoni), in aggiunta al detune globale
  * @param {number} sampleRate
- * @param {{ detune?:number, noise?:number, tail?:number }} [options] detune in semitoni
+ * @param {{ detune?:number, noise?:number, tail?:number, hum?:{ hz:number, db:number } }} [options]
+ *   detune in semitoni; hum = ronzio costante di fondo (es. rete elettrica a 100 Hz)
  */
-export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail = 0.4 } = {}) {
+export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail = 0.4, hum = null } = {}) {
   const total = Math.max(...notes.map((n) => n.end)) + tail;
   const out = new Float32Array(Math.ceil(total * sampleRate));
   let seed = 12345;
@@ -21,6 +22,7 @@ export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail
   for (let i = 0; i < out.length; i++) {
     const t = i / sampleRate;
     let v = rand() * noise;
+    if (hum) v += Math.SQRT2 * 10 ** (hum.db / 20) * Math.sin(2 * Math.PI * hum.hz * t);
     const n = notes.find((x) => t >= x.start && t < x.end);
     if (n) {
       const local = t - n.start;

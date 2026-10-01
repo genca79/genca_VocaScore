@@ -19,6 +19,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
   const grid = $('grid');
   const metronome = $('metronome');
   const refine = $('refine');
+  const legato = $('legato');
   const fileInput = $('open-file');
   const status = $('score-status');
 
@@ -29,6 +30,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
   grid.addEventListener('change', () => doc.setSettings({ grid: Number(grid.value) }));
   metronome.addEventListener('change', () => doc.setSettings({ metronome: metronome.checked }));
   refine.addEventListener('change', () => doc.setSettings({ refine: refine.checked }));
+  legato.addEventListener('change', () => doc.setSettings({ legato: legato.checked }));
 
   title.addEventListener('change', () => doc.setSettings({ title: title.value }));
   title.addEventListener('keydown', (e) => e.key === 'Enter' && title.blur());
@@ -67,6 +69,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
     grid.value = String(s.grid);
     metronome.checked = s.metronome;
     refine.checked = s.refine;
+    legato.checked = s.legato;
   };
   doc.addEventListener('change', sync);
   sync();
@@ -78,7 +81,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
      * la sessione in corso usa i valori con cui è iniziata.
      */
     setRecording(recording) {
-      for (const el of [bpm, timeSignature, grid, metronome, refine]) el.disabled = recording;
+      for (const el of [bpm, timeSignature, grid, metronome, refine, legato]) el.disabled = recording;
     },
 
     /** Messaggio temporaneo sotto la barra (es. "Spartito salvato"). */

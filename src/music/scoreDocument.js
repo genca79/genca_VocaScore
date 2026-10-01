@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   grid: 0.5, // quantizzazione della registrazione in beats: 1 = semiminima, 0.5 = croma, 0.25 = semicroma
   metronome: true, // metronomo con battuta di attacco durante la registrazione
   refine: true, // allo Stop, rianalisi dell'intera registrazione (più precisa) al posto della trascrizione dal vivo
+  legato: true, // una nota staccata viene scritta lunga fino all'attacco successivo, se il silenzio è breve
 });
 
 export const GRID_OPTIONS = [
@@ -294,6 +295,7 @@ function sanitizeSettings(s) {
     grid: GRID_OPTIONS.some((g) => g.value === Number(s.grid)) ? Number(s.grid) : DEFAULT_SETTINGS.grid,
     metronome: s.metronome !== false,
     refine: s.refine !== false,
+    legato: s.legato !== false,
   };
 }
 

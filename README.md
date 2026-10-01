@@ -18,8 +18,11 @@ npm run build    # build statica in dist/ (richiede HTTPS in produzione per il m
 - **Modifica**: clicca una nota e cambiane altezza, durata, punto; trasformala in pausa, duplicala, eliminala.
   Tutto è annullabile (Ctrl+Z / Ctrl+Y).
 - **BPM e tempo** (2/4, 3/4, 4/4, 6/8), chiave automatica o fissa, nomi delle note opzionali.
-- **Trascrizione precisa**: altezza calcolata sull'intera nota (non sull'attacco), sillabe ripetute
-  sulla stessa nota riconosciute dal volume, intonazione di chi canta stimata e compensata.
+- **Trascrizione precisa**: altezza calcolata sull'intera nota (non sull'attacco) e robusta al
+  vibrato, sillabe ripetute sulla stessa nota riconosciute dal volume, intonazione di chi canta
+  stimata e compensata, ronzio di fondo (es. 100 Hz di rete) ignorato.
+- **Note legate**: una nota cantata staccata viene scritta lunga fino all'attacco successivo se il
+  silenzio in mezzo è breve (fino a una croma), invece di diventare nota + pausa. Disattivabile.
 - **Rifinitura allo Stop**: l'audio della sessione (solo in memoria, mai salvato né inviato) viene
   rianalizzato per intero in un Web Worker, con algoritmo di Viterbi e contesto completo; il
   risultato sostituisce la trascrizione dal vivo (Ctrl+Z per tornare a quella).
@@ -71,6 +74,7 @@ ScoreDocument → ScoreRenderer (+ ScoreEditor) · riascolto · bozza · MusicXM
 | `src/music/notation.js` | Quantizzazione, figure, impaginazione in battute, alterazioni, chiave |
 | `src/music/scoreDocument.js` | Documento (impostazioni + note in beats), annulla/ripeti, formato file |
 | `src/music/recorder.js` | Eventi della voce → note e pause, quantizzate su griglia assoluta |
+| `src/music/pitchCenter.js` | Altezza centrale di una nota, robusta al vibrato |
 | `src/music/tuning.js` | Stima dell'intonazione di chi canta (media circolare, gestione dell'ambiguità a ±50 cents) |
 | `src/music/offlineTranscriber.js` | Trascrizione dell'intera registrazione: MPM, Viterbi, sillabe, intonazione |
 | `src/music/offlineWorker.js` · `offlineClient.js` | Esecuzione della rifinitura in un Web Worker |

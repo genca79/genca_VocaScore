@@ -17,6 +17,14 @@ import { timeSignatureInfo } from './notation.js';
  *
  * t0 è il primo movimento dopo la battuta di attacco del metronomo; senza metronomo è l'inizio
  * della prima nota cantata, che diventa così il primo movimento della battuta.
+ *
+ * ── Note legate (impostazione "legato", attiva di default) ─────────────────
+ * Chi canta stacca quasi sempre un po' le note (respiro, articolazione). In notazione però la durata
+ * di una nota è di norma la distanza fino all'attacco successivo: una semiminima cantata staccata
+ * resta una semiminima, non diventa croma + pausa. Quindi, all'attacco di una nota, se il silenzio
+ * dalla precedente è BREVE la nota precedente viene allungata fino a qui invece di scrivere una pausa.
+ * Breve = non più lungo della nota stessa e non oltre `maxGap` (una croma, o un'unità di griglia
+ * se più larga). Un respiro vero tra due frasi (da un movimento in su) resta una pausa.
  */
 export class Recorder {
   /**
@@ -35,12 +43,16 @@ export class Recorder {
    */
   beginSession(t0Ms = null) {
     const { bpm, grid, timeSignature } = this.doc.settings;
+    const legato = this.doc.settings.legato !== false;
     this.#padToMeasure(timeSignature);
     this.session = {
       // per la rifinitura dopo lo Stop: da dove iniziano le note di questa sessione e con quali impostazioni
       startIndex: this.doc.notes.length,
       t0Raw: t0Ms,
-      settings: { bpm, grid, timeSignature },
+      settings: { bpm, grid, timeSignature, legato },
+      extendGaps: legato,
+      maxGap: Math.max(grid, 0.5),
+      lastNoteBeats: null, // durata scritta dell'ultima nota (per l'allungamento legato)
       // Rispetto al metronomo la voce arriva in ritardo (latenza del microfono + finestra di analisi):
       // si sposta t0 in avanti della stessa quantità. Senza metronomo il riferimento è la voce stessa.
       t0: t0Ms === null ? null : t0Ms + this.inputLatencyMs,
@@ -69,12 +81,17 @@ export class Recorder {
    * della registrazione dal vivo: usato per scrivere il risultato della rifinitura.
    *
    * @param {Array<{ midi:number, startMs:number, endMs:number, transition:boolean }>} notes
-   * @param {{ settings:{ bpm:number, grid:number, timeSignature:string }, t0Raw:number|null }} session
+   * @param {{ settings:{ bpm:number, grid:number, timeSignature:string, legato?:boolean }, t0Raw:number|null }} session
    * @returns {Array<{ midi:number|null, beats:number }>}
    */
   static quantize(notes, { settings, t0Raw }) {
     const written = [];
-    const sink = { settings, notes: [], append: (n) => (written.push(n), String(written.length)) };
+    const sink = {
+      settings,
+      notes: [],
+      append: (n) => (written.push({ ...n }), String(written.length)),
+      setBeats: (id, beats) => (written[Number(id) - 1].beats = beats),
+    };
     const rec = new Recorder(sink, { inputLatencyMs: 0 });
     rec.beginSession(t0Raw);
     for (const n of notes) {
@@ -84,13 +101,24 @@ export class Recorder {
     return written;
   }
 
-  /** Inizio di una nota: lo spazio dalla nota precedente diventa una pausa (scritta subito, per la vista live). */
+  /**
+   * Inizio di una nota: lo spazio dalla nota precedente diventa una pausa (scritta subito, per la
+   * vista live), oppure, se è breve e le note legate sono attive, allunga la nota precedente.
+   */
   noteStarted(startMs) {
     const s = this.#ensureSession(startMs);
     const start = Math.max(this.#snap(startMs), s.cursor);
-    if (start - s.cursor >= s.grid) {
-      this.doc.append({ midi: null, beats: start - s.cursor });
-      s.lastNoteId = null;
+    const gap = start - s.cursor;
+    if (gap >= s.grid) {
+      const extend = s.extendGaps && s.lastNoteId !== null && gap <= Math.min(s.lastNoteBeats, s.maxGap);
+      if (extend) {
+        s.lastNoteBeats += gap;
+        this.doc.setBeats(s.lastNoteId, s.lastNoteBeats);
+      } else {
+        this.doc.append({ midi: null, beats: gap });
+        s.lastNoteId = null;
+        s.lastNoteBeats = null;
+      }
       s.legato = false;
     }
     s.cursor = start;
@@ -120,7 +148,8 @@ export class Recorder {
       end = start + s.grid;
     }
     s.cursor = end;
-    s.lastNoteId = this.doc.append({ midi, beats: end - start });
+    s.lastNoteBeats = end - start;
+    s.lastNoteId = this.doc.append({ midi, beats: s.lastNoteBeats });
     return s.lastNoteId;
   }
 

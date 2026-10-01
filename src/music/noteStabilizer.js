@@ -1,4 +1,5 @@
 import { midiToHz, midiToNoteName } from './noteUtils.js';
+import { median, vibratoCenter } from './pitchCenter.js';
 
 /**
  * Trasforma la sequenza "rumorosa" di pitch per frame in eventi di nota discreti (analisi DAL VIVO).
@@ -20,7 +21,9 @@ import { midiToHz, midiToNoteName } from './noteUtils.js';
  *   6. Sillabe ripetute: più sillabe cantate sulla STESSA nota ("la-la-la") non cambiano l'altezza,
  *      ma ognuna produce un calo di volume (la consonante) seguito da una risalita. Un calo di almeno
  *      `dipDb` rispetto al picco recente, seguito entro `maxDipMs` da una risalita di `riseDb`, chiude
- *      la nota e ne apre una nuova uguale.
+ *      la nota; la successiva viene confermata normalmente con i frame dopo il calo.
+ *   7. Ronzio e rumore lontano: un suono più debole di `relativeFloorDb` rispetto al canto recente
+ *      non è voce, anche se il noise gate è aperto (es. ronzio di rete a 100 Hz).
  *
  * Tutte le soglie sono in millisecondi, non in frame: rAF va a 60 Hz su un monitor e a
  * 120/144 Hz su un altro, e con soglie in frame le tolleranze si dimezzerebbero.
@@ -40,6 +43,8 @@ export class NoteStabilizer {
     riseDb = 4,
     maxDipMs = 300,
     peakDecayDbPerSec = 4,
+    relativeFloorDb = 40,
+    sessionPeakDecayDbPerSec = 1,
   } = {}) {
     Object.assign(this, {
       medianWindow,
@@ -53,8 +58,11 @@ export class NoteStabilizer {
       riseDb,
       maxDipMs,
       peakDecayDbPerSec,
+      relativeFloorDb,
+      sessionPeakDecayDbPerSec,
     });
     this.reset();
+    this.sessionPeak = null; // livello del canto recente (sopravvive al reset tra una nota e l'altra)
   }
 
   reset() {
@@ -66,6 +74,26 @@ export class NoteStabilizer {
   }
 
   /**
+   * Un suono molto più debole del canto recente (oltre `relativeFloorDb`) non è voce: tipicamente
+   * il ronzio della rete elettrica (50/100 Hz) o un rumore lontano che tiene aperto il noise gate.
+   * Il riferimento scende lentamente (sessionPeakDecayDbPerSec): chi canta piano a lungo non viene escluso.
+   */
+  #isFarBelowSinging(db, nowMs) {
+    if (db == null || !Number.isFinite(db)) return false;
+    const p = this.sessionPeak;
+    if (!p) {
+      this.sessionPeak = { db, t: nowMs };
+      return false;
+    }
+    const decayed = p.db - (this.sessionPeakDecayDbPerSec * Math.max(0, nowMs - p.t)) / 1000;
+    if (db >= decayed) {
+      this.sessionPeak = { db, t: nowMs };
+      return false;
+    }
+    return db < decayed - this.relativeFloorDb;
+  }
+
+  /**
    * @param {number|null} exactMidi MIDI continuo del frame (già corretto per l'intonazione), o null se non c'è pitch
    * @param {number} nowMs timestamp del frame
    * @param {boolean} [gateOpen] stato del noise gate (distingue silenzio da pitch incerto)
@@ -73,11 +101,26 @@ export class NoteStabilizer {
    * @returns {Array<{type:'noteOn'|'noteOff'} & object>}
    */
   process(exactMidi, nowMs, gateOpen = exactMidi != null, db = null) {
+    if (this.#isFarBelowSinging(db, nowMs)) {
+      exactMidi = null; // ronzio o rumore di fondo: equivale al silenzio
+      gateOpen = false;
+    }
     const syllable = this.#trackEnvelope(db, nowMs, exactMidi != null);
     if (exactMidi == null) return this.#processUnvoiced(nowMs, gateOpen);
 
     const events = [];
     this.lastVoicedMs = nowMs;
+
+    // Nuova sillaba (o nota staccata con il gate rimasto aperto nella pausa): la nota corrente finisce
+    // all'inizio del calo di volume. La cronologia si azzera, perché contiene la nota PRECEDENTE, e la
+    // nuova nota passa dalla normale conferma: la sua altezza viene dai frame dopo il calo.
+    if (this.current && syllable) {
+      events.push(this.#endCurrent(syllable.startMs, false));
+      this.history = [exactMidi];
+      this.candidate = { midi: Math.round(exactMidi), sinceMs: nowMs };
+      return events;
+    }
+
     this.history.push(exactMidi);
     if (this.history.length > this.medianWindow) this.history.shift();
     const smoothed = median(this.history);
@@ -85,15 +128,6 @@ export class NoteStabilizer {
     if (this.current) {
       const center = this.#center();
       const near = Math.abs(smoothed - center) < this.hysteresisSemitones;
-
-      // Nuova sillaba sulla stessa nota: si chiude la nota all'inizio del calo e se ne apre una uguale.
-      if (syllable && near) {
-        events.push(this.#endCurrent(syllable.startMs, false));
-        events.push(this.#startNote(Math.round(smoothed), nowMs));
-        this.current.samples.push({ t: nowMs, m: exactMidi });
-        return events;
-      }
-
       this.current.samples.push({ t: nowMs, m: exactMidi });
       if (near) {
         this.candidate = null;
@@ -142,14 +176,19 @@ export class NoteStabilizer {
   }
 
   /**
-   * Centro della nota: mediana dei campioni dopo l'attacco (finché non ce ne sono, tutti i campioni;
-   * se non ce n'è nessuno, l'altezza con cui la nota è stata confermata).
+   * Centro della nota: altezza centrale dei campioni dopo l'attacco, robusta al vibrato (vedi
+   * pitchCenter.js). Finché non ci sono campioni stabili si usano tutti; se non ce n'è nessuno,
+   * l'altezza con cui la nota è stata confermata.
    */
   #center() {
     const { samples, startMs, midi } = this.current;
     if (samples.length === 0) return midi;
     const stable = samples.filter((s) => s.t - startMs >= this.attackMs);
-    return median((stable.length >= 3 ? stable : samples).map((s) => s.m));
+    const used = stable.length >= 3 ? stable : samples;
+    return vibratoCenter(
+      used.map((s) => s.m),
+      used.map((s) => s.t),
+    );
   }
 
   /**
@@ -223,10 +262,4 @@ export class NoteStabilizer {
       transition,
     };
   }
-}
-
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
