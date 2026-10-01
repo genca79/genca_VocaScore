@@ -26,9 +26,13 @@ npm run build    # build statica in dist/ (richiede HTTPS in produzione per il m
 - **Rifinitura allo Stop**: l'audio della sessione (solo in memoria, mai salvato né inviato) viene
   rianalizzato per intero in un Web Worker, con algoritmo di Viterbi e contesto completo; il
   risultato sostituisce la trascrizione dal vivo (Ctrl+Z per tornare a quella).
-- **Metronomo** con battuta di attacco (click + indicatore visivo) e **quantizzazione** a griglia
-  (1/4, 1/8, 1/16): inizio e fine di ogni nota sono agganciati alla griglia del tempo, quindi gli
-  errori non si accumulano e il canto resta allineato alle battute.
+- **Metronomo** con battuta di attacco (click + indicatore visivo).
+- **Tempo rilevato automaticamente** a metronomo spento: allo Stop i battiti vengono ricostruiti dagli
+  attacchi (programmazione dinamica, segue rallentando e accelerando); i BPM impostati fanno da
+  indicazione. Se lo spartito era vuoto, il tempo rilevato diventa il tempo dello spartito.
+- **Quantizzazione Auto** (default): allo Stop, per ogni movimento si sceglie la suddivisione
+  (intero, metà, quarti) più semplice che rispetta il canto. In alternativa griglia fissa
+  1/4, 1/8, 1/16. Durante il canto l'anteprima usa 1/8.
 - **Riascolto** con 8 strumenti sintetizzati, dall'inizio o dalla nota selezionata.
 - **Salva / Apri** file `.vocascore.json`; bozza salvata automaticamente nel browser.
 - **MusicXML**: esportazione per MuseScore, Finale, Sibelius, Dorico.
@@ -74,6 +78,7 @@ ScoreDocument → ScoreRenderer (+ ScoreEditor) · riascolto · bozza · MusicXM
 | `src/music/notation.js` | Quantizzazione, figure, impaginazione in battute, alterazioni, chiave |
 | `src/music/scoreDocument.js` | Documento (impostazioni + note in beats), annulla/ripeti, formato file |
 | `src/music/recorder.js` | Eventi della voce → note e pause, quantizzate su griglia assoluta |
+| `src/music/rhythm.js` | Rilevamento dei battiti, mappa tempo → posizione, quantizzazione automatica |
 | `src/music/pitchCenter.js` | Altezza centrale di una nota, robusta al vibrato |
 | `src/music/tuning.js` | Stima dell'intonazione di chi canta (media circolare, gestione dell'ambiguità a ±50 cents) |
 | `src/music/offlineTranscriber.js` | Trascrizione dell'intera registrazione: MPM, Viterbi, sillabe, intonazione |

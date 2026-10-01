@@ -21,7 +21,7 @@
         <button id="mic-toggle" class="btn-primary" type="button" aria-pressed="false">Avvia microfono</button>
 
         <div class="rec-settings" aria-label="Impostazioni di registrazione">
-          <label class="field">
+          <label class="field" title="Con il metronomo: il tempo del click. Senza metronomo: il tempo viene rilevato automaticamente dal canto allo Stop (questo valore fa da indicazione).">
             <span>BPM</span>
             <input id="bpm" type="number" step="1" inputmode="numeric" />
           </label>
@@ -37,11 +37,11 @@
               <option value="bass">Basso</option>
             </select>
           </label>
-          <label class="field" title="Risoluzione ritmica della registrazione: inizi e fini delle note vengono agganciati a questa griglia">
+          <label class="field" title="Risoluzione ritmica. Auto: allo Stop, per ogni movimento si sceglie la suddivisione (intero, metà, quarti) più semplice che rispetta il canto. Durante il canto l'anteprima usa 1/8.">
             <span>Quantizzazione</span>
             <select id="grid"></select>
           </label>
-          <label class="switch rec-metronome" title="Click e battuta di attacco durante la registrazione: allinea il canto alle battute">
+          <label class="switch rec-metronome" title="Click e battuta di attacco durante la registrazione. Spento: il tempo viene rilevato automaticamente dal canto allo Stop, comprese piccole variazioni di tempo.">
             <input id="metronome" type="checkbox" />
             <span>Metronomo</span>
           </label>

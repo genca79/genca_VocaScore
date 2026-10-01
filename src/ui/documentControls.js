@@ -27,7 +27,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
   bpm.max = String(MAX_BPM);
   for (const ts of TIME_SIGNATURES) timeSignature.add(new Option(ts, ts));
   for (const g of GRID_OPTIONS) grid.add(new Option(g.label, String(g.value)));
-  grid.addEventListener('change', () => doc.setSettings({ grid: Number(grid.value) }));
+  grid.addEventListener('change', () => doc.setSettings({ grid: grid.value === 'auto' ? 'auto' : Number(grid.value) }));
   metronome.addEventListener('change', () => doc.setSettings({ metronome: metronome.checked }));
   refine.addEventListener('change', () => doc.setSettings({ refine: refine.checked }));
   legato.addEventListener('change', () => doc.setSettings({ legato: legato.checked }));

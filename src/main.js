@@ -24,6 +24,7 @@ import { transcribeInWorker } from './music/offlineClient.js';
 import { SessionCapture } from './audio/sessionCapture.js';
 import { ScoreDocument } from './music/scoreDocument.js';
 import { Recorder } from './music/recorder.js';
+import { transcribeRhythm } from './music/rhythm.js';
 import { timeSignatureInfo } from './music/notation.js';
 import { SynthEngine } from './output/synth.js';
 import { Metronome } from './output/metronome.js';
@@ -285,57 +286,78 @@ function stop() {
   input?.stop();
   input = null;
   setState('idle');
-  if (captured && session) refineSession(captured, session, doc.notes.length, doc.revision);
+  if (session && (captured || session.settings.grid === 'auto' || session.t0Raw === null)) {
+    finishSession(captured ?? null, session, doc.notes.length, doc.revision);
+  }
   ui.updateFrame(null);
 }
 
-// ── Rifinitura dopo lo Stop ────────────────────────────────────────────────
+// ── Fine sessione: rifinitura, tempo rilevato, quantizzazione automatica ────
 
 /**
- * Rianalizza l'intera registrazione nel Web Worker e sostituisce le note della sessione con il
- * risultato, in un'unica modifica annullabile (Ctrl+Z → torna la trascrizione dal vivo).
- * Se nel frattempo lo spartito è stato modificato (nuova registrazione, editing…) la rifinitura
+ * Allo Stop la sessione viene riscritta, in un'unica modifica annullabile (Ctrl+Z → trascrizione
+ * dal vivo):
+ *   - con la rifinitura: dalle note dell'analisi offline dell'intera registrazione (Web Worker);
+ *   - altrimenti, se servono tempo rilevato o quantizzazione Auto: dalle note rilevate dal vivo.
+ * In entrambi i casi tempo (metronomo spento → rilevato) e quantizzazione (Auto → per movimento)
+ * sono decisi da transcribeRhythm. Se nel frattempo lo spartito è stato modificato la riscrittura
  * viene scartata: non si sovrascrive mai il lavoro dell'utente.
  *
- * @param {Promise<object|null>} capturedPromise audio della sessione
- * @param {{ startIndex:number, t0Raw:number|null, settings:object }} session
+ * @param {Promise<object|null>|null} capturedPromise audio della sessione (null se la rifinitura è spenta)
+ * @param {ReturnType<Recorder['sessionInfo']>} session
  * @param {number} endIndex fine (esclusa) delle note della sessione nel documento
  * @param {number} revision revisione del documento allo Stop
  */
-async function refineSession(capturedPromise, session, endIndex, revision) {
-  const captured = await capturedPromise;
-  if (!captured || captured.samples.length < captured.sampleRate * 0.5) return;
-  if (captured.truncated) {
+async function finishSession(capturedPromise, session, endIndex, revision) {
+  const needsRhythm = session.settings.grid === 'auto' || session.t0Raw === null;
+  let notes = null;
+  let latencyMs = 0;
+  let tuningOffset = 0;
+  let refined = false;
+
+  const captured = capturedPromise ? await capturedPromise : null;
+  if (captured?.truncated) {
     docUi.showStatus(`Registrazione oltre ${CONFIG.offline.maxMinutes} minuti: rifinitura non eseguita.`);
+  } else if (captured && captured.samples.length >= captured.sampleRate * 0.5) {
+    docUi.showStatus('Rifinitura della trascrizione…', { sticky: true });
+    try {
+      const result = await transcribeInWorker(captured.samples, captured.sampleRate, {}, (p) =>
+        docUi.showStatus(`Rifinitura della trascrizione… ${Math.round(p * 100)}%`, { sticky: true }),
+      );
+      if (result.notes.length > 0) {
+        // Tempi della registrazione → performance.now(), la stessa base del metronomo.
+        const toPerf = (sec) => captured.startPerfMs + sec * 1000 - CONFIG.offline.inputLatencyMs;
+        notes = result.notes.map((n) => ({ midi: n.midi, startMs: toPerf(n.start), endMs: toPerf(n.end), transition: n.transition }));
+        tuningOffset = result.tuningOffset;
+        refined = true;
+      }
+    } catch (err) {
+      console.error(err);
+      docUi.showStatus(`Rifinitura non riuscita: ${err.message}.`, { error: true });
+    }
+  }
+  if (!notes && needsRhythm && session.rawNotes.length > 0) {
+    notes = session.rawNotes; // note dal vivo: i loro tempi hanno la latenza di analisi rispetto al click
+    latencyMs = CONFIG.score.inputLatencyMs;
+  }
+  if (!notes) return;
+
+  if (doc.revision !== revision) {
+    docUi.showStatus('Lo spartito è stato modificato nel frattempo: trascrizione finale annullata.');
     return;
   }
-  docUi.showStatus('Rifinitura della trascrizione…', { sticky: true });
-  try {
-    const result = await transcribeInWorker(captured.samples, captured.sampleRate, {}, (p) =>
-      docUi.showStatus(`Rifinitura della trascrizione… ${Math.round(p * 100)}%`, { sticky: true }),
-    );
-    if (doc.revision !== revision) {
-      docUi.showStatus('Lo spartito è stato modificato nel frattempo: rifinitura annullata.');
-      return;
-    }
-    if (result.notes.length === 0) {
-      docUi.showStatus('Rifinitura: nessuna nota riconosciuta, resta la trascrizione dal vivo.');
-      return;
-    }
-    // Tempi della registrazione → performance.now(), la stessa base del metronomo.
-    const toPerf = (sec) => captured.startPerfMs + sec * 1000 - CONFIG.offline.inputLatencyMs;
-    const written = Recorder.quantize(
-      result.notes.map((n) => ({ midi: n.midi, startMs: toPerf(n.start), endMs: toPerf(n.end), transition: n.transition })),
-      session,
-    );
-    doc.replaceRange(session.startIndex, endIndex, written);
-    const cents = Math.round(result.tuningOffset * 100);
-    const tuningNote = cents ? ` Intonazione compensata: ${cents > 0 ? '+' : '−'}${Math.abs(cents)} cent.` : '';
-    docUi.showStatus(`Trascrizione rifinita.${tuningNote} Ctrl+Z per tornare a quella dal vivo.`, { durationMs: 9000 });
-  } catch (err) {
-    console.error(err);
-    docUi.showStatus(`Rifinitura non riuscita: ${err.message}. Resta la trascrizione dal vivo.`, { error: true });
-  }
+  const { written, detectedBpm } = transcribeRhythm(notes, { settings: session.settings, t0Ms: session.t0Raw, latencyMs });
+  // Il tempo rilevato diventa il tempo dello spartito se questa è la prima registrazione.
+  const bpm = detectedBpm ? Math.round(detectedBpm) : null;
+  const setBpm = bpm !== null && session.startIndex === 0;
+  doc.replaceRange(session.startIndex, endIndex, written, setBpm ? { bpm } : null);
+
+  const parts = [refined ? 'Trascrizione rifinita.' : 'Trascrizione completata.'];
+  if (bpm !== null) parts.push(setBpm ? `Tempo rilevato: ${bpm} BPM.` : `Tempo rilevato: ${bpm} BPM (lo spartito resta a ${doc.settings.bpm}).`);
+  const cents = Math.round(tuningOffset * 100);
+  if (cents) parts.push(`Intonazione compensata: ${cents > 0 ? '+' : '−'}${Math.abs(cents)} cent.`);
+  parts.push('Ctrl+Z per tornare a quella dal vivo.');
+  docUi.showStatus(parts.join(' '), { durationMs: 10000 });
 }
 
 // ── Riascolto e suono ──────────────────────────────────────────────────────

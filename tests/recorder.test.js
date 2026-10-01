@@ -214,8 +214,11 @@ describe('Recorder.quantize (scrittura della rifinitura)', () => {
       startIndex: 2,
       t0Raw: 5000,
       settings: { bpm: 90, grid: 0.5, timeSignature: '4/4', legato: true },
+      rawNotes: [],
     });
     expect(doc.notes).toHaveLength(2); // nota + pausa di completamento
+    sing(rec, 62, 5000, 5000 + BEAT);
+    expect(rec.sessionInfo.rawNotes).toEqual([{ midi: 62, startMs: 5000, endMs: 5000 + BEAT, transition: false }]);
   });
 });
 

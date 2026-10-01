@@ -27,13 +27,16 @@ export const DEFAULT_SETTINGS = Object.freeze({
   timeSignature: '4/4',
   clef: 'auto', // 'auto' | 'treble' | 'bass'
   showNoteNames: true,
-  grid: 0.5, // quantizzazione della registrazione in beats: 1 = semiminima, 0.5 = croma, 0.25 = semicroma
+  // quantizzazione della registrazione: 'auto' (per movimento, allo Stop) oppure griglia fissa in beats
+  // (1 = semiminima, 0.5 = croma, 0.25 = semicroma)
+  grid: 'auto',
   metronome: true, // metronomo con battuta di attacco durante la registrazione
   refine: true, // allo Stop, rianalisi dell'intera registrazione (più precisa) al posto della trascrizione dal vivo
   legato: true, // una nota staccata viene scritta lunga fino all'attacco successivo, se il silenzio è breve
 });
 
 export const GRID_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
   { value: 1, label: '1/4' },
   { value: 0.5, label: '1/8' },
   { value: 0.25, label: '1/16' },
@@ -127,10 +130,12 @@ export class ScoreDocument extends EventTarget {
   /**
    * Sostituisce gli elementi [start, end) con nuove note in un'unica modifica annullabile
    * (usato dalla rifinitura dopo lo Stop: Ctrl+Z riporta la trascrizione dal vivo).
+   * @param {object} [settingsPatch] impostazioni da cambiare nello stesso passo (es. BPM rilevato)
    */
-  replaceRange(start, end, notes) {
+  replaceRange(start, end, notes, settingsPatch = null) {
     if (start < 0 || end > this.notes.length || start > end) throw new RangeError('Intervallo non valido');
     this.#commit('refine', () => {
+      if (settingsPatch) this.settings = sanitizeSettings({ ...this.settings, ...settingsPatch });
       const fresh = notes.map(({ midi, beats }) => ({
         id: this.#newId(),
         midi: midi === null ? null : clampMidi(midi),
@@ -292,7 +297,7 @@ function sanitizeSettings(s) {
     timeSignature: TIME_SIGNATURES.includes(s.timeSignature) ? s.timeSignature : DEFAULT_SETTINGS.timeSignature,
     clef: ['auto', 'treble', 'bass'].includes(s.clef) ? s.clef : DEFAULT_SETTINGS.clef,
     showNoteNames: s.showNoteNames !== false,
-    grid: GRID_OPTIONS.some((g) => g.value === Number(s.grid)) ? Number(s.grid) : DEFAULT_SETTINGS.grid,
+    grid: s.grid === 'auto' ? 'auto' : GRID_OPTIONS.some((g) => g.value === Number(s.grid)) ? Number(s.grid) : DEFAULT_SETTINGS.grid,
     metronome: s.metronome !== false,
     refine: s.refine !== false,
     legato: s.legato !== false,

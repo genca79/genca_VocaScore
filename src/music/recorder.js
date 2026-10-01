@@ -40,16 +40,24 @@ export class Recorder {
   /**
    * Inizia una sessione di registrazione (a ogni avvio del microfono).
    * @param {number|null} t0Ms istante del primo movimento (performance.now()), o null per agganciarlo alla prima nota
+   * @param {{ snap?:(ms:number) => number, grid?:number }} [options]
+   *   snap: aggancio personalizzato ms → posizione in beats (tempo rilevato, quantizzazione automatica);
+   *   grid: unità minima per le regole di nota breve, pausa e legato quando si usa `snap`
    */
-  beginSession(t0Ms = null) {
-    const { bpm, grid, timeSignature } = this.doc.settings;
+  beginSession(t0Ms = null, { snap = null, grid: gridOverride = null } = {}) {
+    const { bpm, timeSignature } = this.doc.settings;
+    // Con la quantizzazione automatica, durante il canto l'anteprima usa una griglia fissa di 1/8:
+    // la scelta per movimento si fa allo Stop, quando si conosce tutta la sessione.
+    const grid = gridOverride ?? (this.doc.settings.grid === 'auto' ? 0.5 : this.doc.settings.grid);
     const legato = this.doc.settings.legato !== false;
     this.#padToMeasure(timeSignature);
     this.session = {
       // per la rifinitura dopo lo Stop: da dove iniziano le note di questa sessione e con quali impostazioni
       startIndex: this.doc.notes.length,
       t0Raw: t0Ms,
-      settings: { bpm, grid, timeSignature, legato },
+      settings: { bpm, grid: this.doc.settings.grid, timeSignature, legato },
+      rawNotes: [], // note con i tempi grezzi (ms), per riscriverle allo Stop con tempo/griglia automatici
+      snapFn: snap,
       extendGaps: legato,
       maxGap: Math.max(grid, 0.5),
       lastNoteBeats: null, // durata scritta dell'ultima nota (per l'allungamento legato)
@@ -72,8 +80,8 @@ export class Recorder {
   /** Dati della sessione in corso, per la rifinitura (null se nessuna sessione). */
   get sessionInfo() {
     if (!this.session) return null;
-    const { startIndex, t0Raw, settings } = this.session;
-    return { startIndex, t0Raw, settings };
+    const { startIndex, t0Raw, settings, rawNotes } = this.session;
+    return { startIndex, t0Raw, settings, rawNotes: rawNotes.filter((n) => n.endMs !== null) };
   }
 
   /**
@@ -81,10 +89,11 @@ export class Recorder {
    * della registrazione dal vivo: usato per scrivere il risultato della rifinitura.
    *
    * @param {Array<{ midi:number, startMs:number, endMs:number, transition:boolean }>} notes
-   * @param {{ settings:{ bpm:number, grid:number, timeSignature:string, legato?:boolean }, t0Raw:number|null }} session
+   * @param {{ settings:{ bpm:number, grid:number|'auto', timeSignature:string, legato?:boolean }, t0Raw:number|null,
+   *           snap?:(ms:number) => number, grid?:number }} session
    * @returns {Array<{ midi:number|null, beats:number }>}
    */
-  static quantize(notes, { settings, t0Raw }) {
+  static quantize(notes, { settings, t0Raw, snap = null, grid = null }) {
     const written = [];
     const sink = {
       settings,
@@ -93,7 +102,7 @@ export class Recorder {
       setBeats: (id, beats) => (written[Number(id) - 1].beats = beats),
     };
     const rec = new Recorder(sink, { inputLatencyMs: 0 });
-    rec.beginSession(t0Raw);
+    rec.beginSession(t0Raw, { snap, grid });
     for (const n of notes) {
       rec.noteStarted(n.startMs);
       rec.noteEnded({ midi: n.midi, endMs: n.endMs, transition: n.transition });
@@ -107,6 +116,7 @@ export class Recorder {
    */
   noteStarted(startMs) {
     const s = this.#ensureSession(startMs);
+    s.rawNotes.push({ midi: null, startMs, endMs: null, transition: false });
     const start = Math.max(this.#snap(startMs), s.cursor);
     const gap = start - s.cursor;
     if (gap >= s.grid) {
@@ -132,6 +142,7 @@ export class Recorder {
   noteEnded({ midi, endMs, transition = false }) {
     const s = this.session;
     if (!s || s.pendingStart === null) return null;
+    Object.assign(s.rawNotes.at(-1), { midi, endMs, transition });
     const start = s.pendingStart;
     let end = this.#snap(endMs);
     s.pendingStart = null;
@@ -168,6 +179,7 @@ export class Recorder {
 
   #snap(ms) {
     const s = this.session;
+    if (s.snapFn) return s.snapFn(ms);
     const beat = (ms - s.t0) / s.beatMs;
     return Math.max(0, Math.round(beat / s.grid) * s.grid);
   }
