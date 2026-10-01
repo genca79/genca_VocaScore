@@ -52,6 +52,18 @@ describe('NoiseGate adattivo', () => {
     expect(gate.openDb).toBeCloseTo(before, 1);
   });
 
+  it('REGRESSIONE: il silenzio digitale iniziale non abbassa la stima del rumore di fondo', () => {
+    // Avvio dello stream (−100 dB), poi ronzio di rete a −67 dB, canto, e di nuovo solo ronzio:
+    // il gate deve richiudersi sul ronzio (prima restava aperto e il ronzio diventava una nota).
+    const gate = new NoiseGate();
+    const clock = { t: 0 };
+    hold(gate, -Infinity, 300, clock);
+    hold(gate, -67, 1200, clock);
+    expect(gate.openDb).toBeGreaterThan(-60);
+    expect(hold(gate, -15, 2000, clock).at(-1)).toBe(true);
+    expect(hold(gate, -67, 1000, clock).at(-1)).toBe(false);
+  });
+
   it('isteresi e hold: un calo breve non chiude, il silenzio sì', () => {
     const gate = new NoiseGate({ holdMs: 250 });
     const clock = { t: 0 };

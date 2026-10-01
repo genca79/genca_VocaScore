@@ -23,6 +23,10 @@ export function rmsToDb(rms) {
 }
 
 const DB_FLOOR = -100; // limite inferiore pratico (evita −∞ quando lo stream è ancora muto)
+// Sotto questo livello è silenzio DIGITALE (stream non ancora partito, microfono disattivato), non il
+// rumore della stanza: non va usato per stimare il rumore di fondo, altrimenti la soglia di chiusura
+// finirebbe sotto il ronzio reale e il gate resterebbe aperto sul ronzio dopo il canto.
+const DIGITAL_SILENCE_DB = -90;
 
 /**
  * Gate ADATTIVO con isteresi e tempo di tenuta.
@@ -97,6 +101,7 @@ export class NoiseGate {
   }
 
   #updateFloor(level, dtMs) {
+    if (level < DIGITAL_SILENCE_DB) return;
     if (this.floorDb === null) {
       this.floorDb = level;
     } else if (level < this.floorDb) {

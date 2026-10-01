@@ -37,6 +37,10 @@ export class Recorder {
     const { bpm, grid, timeSignature } = this.doc.settings;
     this.#padToMeasure(timeSignature);
     this.session = {
+      // per la rifinitura dopo lo Stop: da dove iniziano le note di questa sessione e con quali impostazioni
+      startIndex: this.doc.notes.length,
+      t0Raw: t0Ms,
+      settings: { bpm, grid, timeSignature },
       // Rispetto al metronomo la voce arriva in ritardo (latenza del microfono + finestra di analisi):
       // si sposta t0 in avanti della stessa quantità. Senza metronomo il riferimento è la voce stessa.
       t0: t0Ms === null ? null : t0Ms + this.inputLatencyMs,
@@ -51,6 +55,33 @@ export class Recorder {
 
   endSession() {
     this.session = null;
+  }
+
+  /** Dati della sessione in corso, per la rifinitura (null se nessuna sessione). */
+  get sessionInfo() {
+    if (!this.session) return null;
+    const { startIndex, t0Raw, settings } = this.session;
+    return { startIndex, t0Raw, settings };
+  }
+
+  /**
+   * Quantizza su griglia una lista di note con tempi in ms (performance.now()), con le stesse regole
+   * della registrazione dal vivo: usato per scrivere il risultato della rifinitura.
+   *
+   * @param {Array<{ midi:number, startMs:number, endMs:number, transition:boolean }>} notes
+   * @param {{ settings:{ bpm:number, grid:number, timeSignature:string }, t0Raw:number|null }} session
+   * @returns {Array<{ midi:number|null, beats:number }>}
+   */
+  static quantize(notes, { settings, t0Raw }) {
+    const written = [];
+    const sink = { settings, notes: [], append: (n) => (written.push(n), String(written.length)) };
+    const rec = new Recorder(sink, { inputLatencyMs: 0 });
+    rec.beginSession(t0Raw);
+    for (const n of notes) {
+      rec.noteStarted(n.startMs);
+      rec.noteEnded({ midi: n.midi, endMs: n.endMs, transition: n.transition });
+    }
+    return written;
   }
 
   /** Inizio di una nota: lo spazio dalla nota precedente diventa una pausa (scritta subito, per la vista live). */

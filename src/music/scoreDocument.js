@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showNoteNames: true,
   grid: 0.5, // quantizzazione della registrazione in beats: 1 = semiminima, 0.5 = croma, 0.25 = semicroma
   metronome: true, // metronomo con battuta di attacco durante la registrazione
+  refine: true, // allo Stop, rianalisi dell'intera registrazione (più precisa) al posto della trascrizione dal vivo
 });
 
 export const GRID_OPTIONS = [
@@ -57,6 +58,8 @@ export class ScoreDocument extends EventTarget {
     this.undoStack = [];
     this.redoStack = [];
     this.nextId = 1;
+    /** Cresce a ogni modifica: permette di sapere se il documento è cambiato nel frattempo. */
+    this.revision = 0;
   }
 
   // ── Lettura ────────────────────────────────────────────────────────────
@@ -118,6 +121,22 @@ export class ScoreDocument extends EventTarget {
       this.notes.push({ id, midi: midi === null ? null : clampMidi(midi), beats: snapBeats(beats) });
     });
     return id;
+  }
+
+  /**
+   * Sostituisce gli elementi [start, end) con nuove note in un'unica modifica annullabile
+   * (usato dalla rifinitura dopo lo Stop: Ctrl+Z riporta la trascrizione dal vivo).
+   */
+  replaceRange(start, end, notes) {
+    if (start < 0 || end > this.notes.length || start > end) throw new RangeError('Intervallo non valido');
+    this.#commit('refine', () => {
+      const fresh = notes.map(({ midi, beats }) => ({
+        id: this.#newId(),
+        midi: midi === null ? null : clampMidi(midi),
+        beats: snapBeats(beats),
+      }));
+      this.notes.splice(start, end - start, ...fresh);
+    });
   }
 
   /** Inserisce una copia dell'elemento `id` subito dopo di esso. Restituisce il nuovo id. */
@@ -248,6 +267,7 @@ export class ScoreDocument extends EventTarget {
   }
 
   #emit(kind) {
+    this.revision++;
     this.dispatchEvent(new CustomEvent('change', { detail: { kind } }));
   }
 
@@ -273,6 +293,7 @@ function sanitizeSettings(s) {
     showNoteNames: s.showNoteNames !== false,
     grid: GRID_OPTIONS.some((g) => g.value === Number(s.grid)) ? Number(s.grid) : DEFAULT_SETTINGS.grid,
     metronome: s.metronome !== false,
+    refine: s.refine !== false,
   };
 }
 

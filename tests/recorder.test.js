@@ -125,6 +125,39 @@ describe('Recorder: note mancanti o in più', () => {
   });
 });
 
+describe('Recorder.quantize (scrittura della rifinitura)', () => {
+  it('stesse regole della registrazione dal vivo, con la griglia della sessione', () => {
+    const session = { t0Raw: 1000, settings: { bpm: 90, grid: 0.5, timeSignature: '4/4' } };
+    const notes = [
+      { midi: 60, startMs: 1000 + 10, endMs: 1000 + BEAT - 60, transition: false },
+      { midi: 62, startMs: 1000 + BEAT + 20, endMs: 1000 + 3 * BEAT - 80, transition: false },
+      { midi: 64, startMs: 1000 + 4 * BEAT, endMs: 1000 + 5 * BEAT, transition: false },
+    ];
+    expect(Recorder.quantize(notes, session)).toEqual([
+      { midi: 60, beats: 1 },
+      { midi: 62, beats: 2 },
+      { midi: null, beats: 1 },
+      { midi: 64, beats: 1 },
+    ]);
+  });
+
+  it('senza metronomo la griglia parte dalla prima nota', () => {
+    const session = { t0Raw: null, settings: { bpm: 90, grid: 0.5, timeSignature: '4/4' } };
+    const written = Recorder.quantize([{ midi: 67, startMs: 52_000, endMs: 52_000 + 2 * BEAT, transition: false }], session);
+    expect(written).toEqual([{ midi: 67, beats: 2 }]);
+  });
+
+  it('sessionInfo registra inizio e impostazioni della sessione (dopo il completamento della battuta)', () => {
+    const { doc, rec } = setup();
+    rec.beginSession(0);
+    sing(rec, 60, 0, 3 * BEAT - 50);
+    rec.endSession();
+    rec.beginSession(5000);
+    expect(rec.sessionInfo).toEqual({ startIndex: 2, t0Raw: 5000, settings: { bpm: 90, grid: 0.5, timeSignature: '4/4' } });
+    expect(doc.notes).toHaveLength(2); // nota + pausa di completamento
+  });
+});
+
 describe('Recorder: sessioni', () => {
   it('una nuova sessione completa la battuta e riparte dal primo movimento', () => {
     const { doc, rec } = setup();

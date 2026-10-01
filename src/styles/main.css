@@ -27,7 +27,7 @@ body {
 .app-header,
 .app,
 .app-footer {
-  max-width: 960px;
+  max-width: 1240px;
   margin-inline: auto;
 }
 
@@ -52,28 +52,45 @@ body {
   color: var(--muted);
 }
 
+/*
+ * Layout a due righe:
+ *   riga 1 → Controlli · Accordatore · Suono Synth
+ *   riga 2 → Spartito (tutta la larghezza)
+ * Su schermi medi il Suono Synth va sotto a tutta larghezza; su telefono tutto in colonna.
+ */
 .app {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start; /* ogni pannello alto quanto il suo contenuto, niente spazi vuoti */
   gap: 16px;
+}
+
+.panel {
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+.score-panel {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1080px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .sound-panel {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 640px) {
   .app {
     grid-template-columns: 1fr;
   }
-}
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 20px;
-}
-
-.score-panel,
-.sound-panel {
-  grid-column: 1 / -1;
 }
 
 .panel-header {
@@ -94,12 +111,48 @@ body {
   gap: 8px;
 }
 
-/* ── Suono ─────────────────────────────────────────────── */
+/* ── Suono Synth (compatto) ────────────────────────────── */
 .sound-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 14px 20px;
-  margin-top: 14px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 10px 12px;
+  margin-top: 12px;
+}
+
+/* Cursori su una riga: etichetta a sinistra, cursore a destra.
+   (selettore .field.field-slider: deve prevalere su .field, definita più sotto) */
+.field.field-slider {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.field.field-slider span {
+  flex: 0 0 6.2em;
+}
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 1080px) {
+  /* a tutta larghezza c'è spazio: tutti i controlli su una riga */
+  .sound-grid {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
+  .field.field-slider {
+    grid-column: auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .field.field-slider span {
+    flex: none;
+  }
 }
 
 .field {
@@ -201,7 +254,18 @@ body {
 }
 
 .rec-metronome {
-  padding-bottom: 8px; /* allinea la casella alla base dei campi accanto */
+  grid-column: span 2; /* le caselle hanno etichette lunghe: due colonne ciascuna */
+  padding-bottom: 4px;
+}
+
+.tuning-info {
+  margin: 12px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.tuning-info.is-active {
+  color: var(--ink);
 }
 
 .status-row {

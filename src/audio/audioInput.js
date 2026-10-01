@@ -49,8 +49,25 @@ export class AudioInput {
     this.stream = null;
     this.source = null;
     this.analyser = null;
+    /** Nodi aggiuntivi che ricevono il microfono (es. la cattura per la rifinitura). */
+    this.taps = new Set();
     /** Chiamata se il dispositivo sparisce durante l'uso (es. cuffie USB scollegate). */
     this.onEnded = null;
+  }
+
+  /** Collega un nodo al microfono; resta collegato anche se lo stream viene riaperto. */
+  addTap(node) {
+    this.taps.add(node);
+    this.source?.connect(node);
+  }
+
+  removeTap(node) {
+    this.taps.delete(node);
+    try {
+      this.source?.disconnect(node);
+    } catch {
+      // già scollegato
+    }
   }
 
   get isActive() {
@@ -134,9 +151,10 @@ export class AudioInput {
       this.onEnded?.(new AudioInputError('DEVICE_LOST', 'Il microfono è stato scollegato.'));
     });
     this.source = this.ctx.createMediaStreamSource(stream);
-    // IMPORTANTE (anti-Larsen): il microfono va SOLO all'analyser e MAI a ctx.destination.
+    // IMPORTANTE (anti-Larsen): il microfono va SOLO ai nodi di analisi e MAI a ctx.destination.
     // Collegarlo all'uscita creerebbe un anello diretto microfono → altoparlante → microfono.
     this.source.connect(this.analyser);
+    for (const tap of this.taps) this.source.connect(tap);
   }
 
   #detachStream() {
@@ -149,5 +167,6 @@ export class AudioInput {
   stop() {
     this.#detachStream();
     this.analyser = null;
+    this.taps.clear();
   }
 }

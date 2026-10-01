@@ -18,6 +18,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
   const names = $('note-names');
   const grid = $('grid');
   const metronome = $('metronome');
+  const refine = $('refine');
   const fileInput = $('open-file');
   const status = $('score-status');
 
@@ -27,6 +28,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
   for (const g of GRID_OPTIONS) grid.add(new Option(g.label, String(g.value)));
   grid.addEventListener('change', () => doc.setSettings({ grid: Number(grid.value) }));
   metronome.addEventListener('change', () => doc.setSettings({ metronome: metronome.checked }));
+  refine.addEventListener('change', () => doc.setSettings({ refine: refine.checked }));
 
   title.addEventListener('change', () => doc.setSettings({ title: title.value }));
   title.addEventListener('keydown', (e) => e.key === 'Enter' && title.blur());
@@ -64,6 +66,7 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
     names.checked = s.showNoteNames;
     grid.value = String(s.grid);
     metronome.checked = s.metronome;
+    refine.checked = s.refine;
   };
   doc.addEventListener('change', sync);
   sync();
@@ -75,15 +78,15 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
      * la sessione in corso usa i valori con cui è iniziata.
      */
     setRecording(recording) {
-      for (const el of [bpm, timeSignature, grid, metronome]) el.disabled = recording;
+      for (const el of [bpm, timeSignature, grid, metronome, refine]) el.disabled = recording;
     },
 
     /** Messaggio temporaneo sotto la barra (es. "Spartito salvato"). */
-    showStatus(message, { error = false } = {}) {
+    showStatus(message, { error = false, sticky = false, durationMs } = {}) {
       status.textContent = message;
       status.classList.toggle('is-error', error);
       clearTimeout(statusTimer);
-      statusTimer = setTimeout(() => (status.textContent = ''), error ? 8000 : 4000);
+      if (!sticky) statusTimer = setTimeout(() => (status.textContent = ''), durationMs ?? (error ? 8000 : 4000));
     },
   };
 }

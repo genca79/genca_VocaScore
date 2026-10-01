@@ -40,6 +40,7 @@ export function createControls({
   const feedbackEl = $('feedback-reason');
   const outputBadge = $('output-badge');
   const beatEl = $('beat-indicator');
+  const tuningEl = $('tuning-info');
   const thresholdEl = $('meter-threshold');
   const levelEl = $('meter-label');
 
@@ -162,6 +163,19 @@ export function createControls({
       playBtn.textContent = playing ? '■ Stop' : '▶ Riascolta';
       playBtn.classList.toggle('is-playing', playing);
       playBtn.setAttribute('aria-pressed', String(playing));
+    },
+
+    /** Scarto d'intonazione stimato (cents) e frequenza di riferimento corrispondente. */
+    setTuning(cents) {
+      if (cents === 0) {
+        tuningEl.textContent = 'Intonazione: allineata a La = 440 Hz';
+        tuningEl.classList.remove('is-active');
+        return;
+      }
+      const a4 = 440 * 2 ** (cents / 1200);
+      const sign = cents > 0 ? '+' : '−';
+      tuningEl.textContent = `Intonazione stimata: ${sign}${Math.abs(cents)} cent (La = ${a4.toFixed(1)} Hz), compensata`;
+      tuningEl.classList.add('is-active');
     },
 
     setCanPlay(canPlay) {

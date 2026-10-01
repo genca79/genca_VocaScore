@@ -18,6 +18,11 @@ npm run build    # build statica in dist/ (richiede HTTPS in produzione per il m
 - **Modifica**: clicca una nota e cambiane altezza, durata, punto; trasformala in pausa, duplicala, eliminala.
   Tutto è annullabile (Ctrl+Z / Ctrl+Y).
 - **BPM e tempo** (2/4, 3/4, 4/4, 6/8), chiave automatica o fissa, nomi delle note opzionali.
+- **Trascrizione precisa**: altezza calcolata sull'intera nota (non sull'attacco), sillabe ripetute
+  sulla stessa nota riconosciute dal volume, intonazione di chi canta stimata e compensata.
+- **Rifinitura allo Stop**: l'audio della sessione (solo in memoria, mai salvato né inviato) viene
+  rianalizzato per intero in un Web Worker, con algoritmo di Viterbi e contesto completo; il
+  risultato sostituisce la trascrizione dal vivo (Ctrl+Z per tornare a quella).
 - **Metronomo** con battuta di attacco (click + indicatore visivo) e **quantizzazione** a griglia
   (1/4, 1/8, 1/16): inizio e fine di ogni nota sono agganciati alla griglia del tempo, quindi gli
   errori non si accumulano e il canto resta allineato alle battute.
@@ -45,13 +50,13 @@ npm run build    # build statica in dist/ (richiede HTTPS in produzione per il m
 ## Architettura
 
 ```
-Microfono → AnalyserNode → [rAF] → NoiseGate → MPM → hzToNote → NoteStabilizer
-                                                                ├→ SynthEngine (voce live, filtrata da FeedbackGuard)
-                                                                └→ Recorder → ScoreDocument ─┬→ ScoreRenderer (+ ScoreEditor)
-                                                                                             ├→ SynthEngine (riascolto)
-                                                                                             ├→ salvataggio / bozza
-                                                                                             ├→ MusicXML
-                                                                                             └→ PDF
+Microfono ─┬→ AnalyserNode → [rAF] → NoiseGate → MPM → − intonazione → NoteStabilizer
+           │                                                          ├→ SynthEngine (voce live)
+           │                                                          └→ Recorder → ScoreDocument
+           └→ SessionCapture (AudioWorklet) ──Stop──→ Web Worker (trascrizione offline)
+                                                      └→ ScoreDocument.replaceRange (annullabile)
+
+ScoreDocument → ScoreRenderer (+ ScoreEditor) · riascolto · bozza · MusicXML · PDF
 ```
 
 | Modulo | Ruolo |
@@ -66,6 +71,10 @@ Microfono → AnalyserNode → [rAF] → NoiseGate → MPM → hzToNote → Note
 | `src/music/notation.js` | Quantizzazione, figure, impaginazione in battute, alterazioni, chiave |
 | `src/music/scoreDocument.js` | Documento (impostazioni + note in beats), annulla/ripeti, formato file |
 | `src/music/recorder.js` | Eventi della voce → note e pause, quantizzate su griglia assoluta |
+| `src/music/tuning.js` | Stima dell'intonazione di chi canta (media circolare, gestione dell'ambiguità a ±50 cents) |
+| `src/music/offlineTranscriber.js` | Trascrizione dell'intera registrazione: MPM, Viterbi, sillabe, intonazione |
+| `src/music/offlineWorker.js` · `offlineClient.js` | Esecuzione della rifinitura in un Web Worker |
+| `src/audio/captureProcessor.js` · `sessionCapture.js` | Cattura dell'audio della sessione (AudioWorklet, ~16 kHz) |
 | `src/output/metronome.js` | Metronomo con count-in, schedulato sull'orologio audio |
 | `src/output/instruments.js` | 8 strumenti in sintesi pura (nessun campione da scaricare) |
 | `src/output/synth.js` | Motore sonoro: voce live + voce di riascolto, filtro, riverbero, limiter |

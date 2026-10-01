@@ -33,6 +33,23 @@ export const CONFIG = {
     minClarity: 0.8, // sotto questa chiarezza il segnale non è considerato intonato (rumore, sibilanti)
   },
 
+  // Stima dell'intonazione di chi canta (vedi music/tuning.js)
+  tuning: {
+    minNotes: 3, // note necessarie prima di correggere
+    decay: 0.85, // peso delle note precedenti a ogni nuova nota (segue un cantante che si sposta)
+    maxOffset: 0.4, // correzione massima: ±40 cents (oltre, lo scarto è ambiguo di un semitono)
+    minCoherence: 0.5, // scarti troppo sparsi → nessuna correzione
+    flipGuard: 0.35, // vicino a ±50 cents la stima non cambia direzione (vedi tuning.js)
+    ambiguous: 0.45, // oltre ±45 cents la direzione è indecidibile: la stima viene ignorata
+  },
+
+  // Rifinitura dopo lo Stop (vedi music/offlineTranscriber.js)
+  offline: {
+    captureRate: 16000, // l'audio della sessione viene conservato (solo in memoria) a ~16 kHz
+    maxMinutes: 10, // oltre, la rifinitura non viene eseguita (memoria)
+    inputLatencyMs: 15, // latenza del microfono: l'analisi offline non ha ritardi di elaborazione
+  },
+
   stabilizer: {
     medianWindow: 7, // valori per il filtro mediano
     confirmMs: 80, // stabilità richiesta per confermare una nuova nota
@@ -40,6 +57,10 @@ export const CONFIG = {
     hysteresisSemitones: 0.8, // quanto ci si deve allontanare dalla nota corrente per cambiarla
     releaseMs: 180, // silenzio (gate chiuso) prima di chiudere la nota
     unvoicedHoldMs: 400, // gate aperto ma pitch incerto (respiro, consonante): la nota resta viva
+    attackMs: 100, // attacco escluso dal calcolo dell'altezza della nota (scivolate d'ingresso)
+    dipDb: 6, // sillaba ripetuta: calo di volume minimo rispetto al picco recente…
+    riseDb: 4, // …seguito da una risalita di almeno questo…
+    maxDipMs: 300, // …entro questo tempo (oltre è una pausa o un diminuendo, non una consonante)
   },
 
   synth: {

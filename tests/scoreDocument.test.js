@@ -51,6 +51,17 @@ describe('ScoreDocument: modifiche', () => {
     expect(doc.get(id).midi).toBe(62);
   });
 
+  it('replaceRange: sostituzione in un solo passo annullabile, revisione aggiornata', () => {
+    const doc = docWith([{ midi: 60, beats: 1 }, { midi: 61, beats: 1 }, { midi: 62, beats: 1 }, { midi: 63, beats: 1 }]);
+    const rev = doc.revision;
+    doc.replaceRange(1, 3, [{ midi: 70, beats: 2 }, { midi: null, beats: 0.5 }, { midi: 71, beats: 0.5 }]);
+    expect(doc.notes.map((n) => n.midi)).toEqual([60, 70, null, 71, 63]);
+    expect(doc.revision).toBeGreaterThan(rev);
+    doc.undo();
+    expect(doc.notes.map((n) => n.midi)).toEqual([60, 61, 62, 63]);
+    expect(() => doc.replaceRange(3, 9, [])).toThrow(RangeError);
+  });
+
   it('"Nuovo" è annullabile', () => {
     const doc = docWith([{ midi: 60, beats: 1 }]);
     doc.setSettings({ title: 'Prova' });

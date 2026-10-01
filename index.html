@@ -45,6 +45,11 @@
             <input id="metronome" type="checkbox" />
             <span>Metronomo</span>
           </label>
+          <label class="switch rec-metronome"
+            title="Allo Stop la registrazione viene rianalizzata per intero (solo nel browser) e la trascrizione dal vivo viene sostituita da una più precisa. Ctrl+Z per tornare a quella dal vivo.">
+            <input id="refine" type="checkbox" />
+            <span>Rifinisci allo Stop</span>
+          </label>
         </div>
 
         <div class="status-row">
@@ -85,12 +90,16 @@
           </div>
           <span id="meter-label" class="meter-label" title="Livello attuale / soglia del gate">Livello</span>
         </div>
+        <p id="tuning-info" class="tuning-info"
+          title="Scarto medio dell'intonazione di chi canta rispetto a La = 440 Hz: viene compensato nella trascrizione">
+          Intonazione: in attesa di qualche nota
+        </p>
       </section>
 
-      <section class="panel sound-panel" aria-label="Suono">
+      <section class="panel sound-panel" aria-label="Suono Synth">
         <div class="panel-header">
-          <h2>Suono</h2>
-          <button id="preview-sound" class="btn-secondary" type="button">Prova suono</button>
+          <h2>Suono Synth</h2>
+          <button id="preview-sound" class="btn-secondary btn-small" type="button">Prova suono</button>
         </div>
         <div class="sound-grid">
           <label class="field">
@@ -107,15 +116,15 @@
               <option value="2">+2</option>
             </select>
           </label>
-          <label class="field">
+          <label class="field field-slider">
             <span>Brillantezza</span>
             <input id="brightness" type="range" min="0" max="1" step="0.01" />
           </label>
-          <label class="field">
+          <label class="field field-slider">
             <span>Riverbero</span>
             <input id="reverb" type="range" min="0" max="1" step="0.01" />
           </label>
-          <label class="field">
+          <label class="field field-slider">
             <span>Volume</span>
             <input id="volume" type="range" min="-40" max="0" step="1" />
           </label>

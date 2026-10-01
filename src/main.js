@@ -1,12 +1,13 @@
 /**
  * Orchestratore: crea i moduli e li collega tramite eventi. Non contiene logica di dominio.
  *
- *   Microfono → AnalyserNode → [rAF] → NoiseGate → MPM → hzToNote → NoteStabilizer
- *                                                                   ├→ SynthEngine (voce live, filtrata da FeedbackGuard)
- *                                                                   └→ Recorder → ScoreDocument ─┬→ ScoreRenderer (+ ScoreEditor)
- *                                                                                                ├→ SynthEngine (riascolto)
- *                                                                                                ├→ salvataggio / bozza
- *                                                                                                └→ ScorePrinter (PDF)
+ *   Microfono ─┬→ AnalyserNode → [rAF] → NoiseGate → MPM → hzToNote − intonazione → NoteStabilizer
+ *              │                                                                    ├→ SynthEngine (voce live)
+ *              │                                                                    └→ Recorder → ScoreDocument
+ *              └→ SessionCapture (AudioWorklet) ──Stop──→ Web Worker (trascrizione offline)
+ *                                                          └→ ScoreDocument.replaceRange (rifinitura, annullabile)
+ *
+ *   ScoreDocument → ScoreRenderer (+ ScoreEditor) · riascolto · bozza · MusicXML · PDF
  */
 import './styles/main.css';
 import { CONFIG } from './config.js';
@@ -18,6 +19,9 @@ import { PitchAnalyzer } from './audio/pitchDetector.js';
 import { FeedbackGuard } from './audio/feedbackGuard.js';
 import { hzToNote } from './music/noteUtils.js';
 import { NoteStabilizer } from './music/noteStabilizer.js';
+import { TuningEstimator } from './music/tuning.js';
+import { transcribeInWorker } from './music/offlineClient.js';
+import { SessionCapture } from './audio/sessionCapture.js';
 import { ScoreDocument } from './music/scoreDocument.js';
 import { Recorder } from './music/recorder.js';
 import { timeSignatureInfo } from './music/notation.js';
@@ -38,6 +42,7 @@ const SOUND_STORAGE_KEY = 'vocascore.sound';
 const doc = new ScoreDocument();
 const recorder = new Recorder(doc, CONFIG.score);
 const stabilizer = new NoteStabilizer(CONFIG.stabilizer);
+const tuning = new TuningEstimator(CONFIG.tuning);
 const gate = new NoiseGate(CONFIG.gate);
 const guard = new FeedbackGuard((state) => bus.emit('feedback', state));
 const sound = loadSoundSettings();
@@ -50,6 +55,8 @@ let metronome = null;
 let input = null;
 /** @type {PitchAnalyzer|null} */
 let analyzer = null;
+/** @type {SessionCapture|null} audio della sessione per la rifinitura */
+let capture = null;
 let state = 'idle';
 
 // Stato della vista dello spartito
@@ -115,6 +122,9 @@ bus.on('note:off', (note) => {
   pending = null;
   clearInterval(liveTimer);
   recorder.noteEnded(note); // → doc 'change' → renderScore
+  // Il centro della nota (corretto) + la correzione in uso = altezza realmente cantata.
+  tuning.observe(note.center + tuning.offset, note.durationMs / 1000);
+  ui.setTuning(tuning.cents);
 });
 
 bus.on('feedback', (feedbackState) => {
@@ -155,10 +165,12 @@ function setState(next) {
 /** Callback del loop di analisi, ~60 volte al secondo. */
 function onFrame(frame) {
   const note = frame.hz !== null ? hzToNote(frame.hz) : null;
-  ui.updateFrame({ ...frame, note });
+  ui.updateFrame({ ...frame, note }); // l'accordatore mostra lo scarto REALE da La = 440 Hz
+  // Alla trascrizione arriva l'altezza corretta per l'intonazione di chi canta.
+  const corrected = note ? note.exactMidi - tuning.offset : null;
   // gateOpen distingue il silenzio vero (chiude la nota presto) da un frame incerto
-  // a voce presente, come respiro o consonante (la nota resta viva più a lungo).
-  emitNoteEvents(stabilizer.process(note ? note.exactMidi : null, frame.timeMs, frame.gateOpen));
+  // a voce presente, come respiro o consonante; il volume serve a riconoscere le sillabe ripetute.
+  emitNoteEvents(stabilizer.process(corrected, frame.timeMs, frame.gateOpen, frame.db));
 }
 
 /** Sblocca l'audio (va chiamata in un gesto dell'utente) e crea il motore sonoro alla prima occorrenza. */
@@ -220,7 +232,18 @@ async function start() {
     // 3. Rilevazione delle cuffie: solo ora i nomi dei dispositivi sono leggibili (dopo il permesso).
     await guard.init(); // emette 'feedback' → imposta mute della voce live e AEC
 
-    // 4. Loop di analisi. Le nuove note vengono aggiunte in coda allo spartito.
+    // 4. Cattura dell'audio della sessione (solo in memoria) per la rifinitura dopo lo Stop.
+    if (doc.settings.refine) {
+      try {
+        capture = new SessionCapture(CONFIG.offline);
+        await capture.start(input);
+      } catch (err) {
+        console.warn('Rifinitura non disponibile:', err);
+        capture = null;
+      }
+    }
+
+    // 5. Loop di analisi. Le nuove note vengono aggiunte in coda allo spartito.
     beginRecordingSession();
     docUi.setRecording(true);
     analyzer = new PitchAnalyzer(analyser, ctx.sampleRate, {
@@ -233,6 +256,8 @@ async function start() {
     setState('running');
   } catch (err) {
     console.error(err);
+    capture?.stop();
+    capture = null;
     input?.stop();
     input = null;
     metronome?.stop();
@@ -249,6 +274,9 @@ function stop() {
   analyzer?.stop();
   analyzer = null;
   emitNoteEvents(stabilizer.flush(performance.now())); // prima di endSession: la nota aperta va scritta
+  const session = recorder.sessionInfo;
+  const captured = capture?.stop(); // prima di spegnere il microfono
+  capture = null;
   recorder.endSession();
   metronome?.stop();
   ui.setBeat(null);
@@ -257,7 +285,57 @@ function stop() {
   input?.stop();
   input = null;
   setState('idle');
+  if (captured && session) refineSession(captured, session, doc.notes.length, doc.revision);
   ui.updateFrame(null);
+}
+
+// ── Rifinitura dopo lo Stop ────────────────────────────────────────────────
+
+/**
+ * Rianalizza l'intera registrazione nel Web Worker e sostituisce le note della sessione con il
+ * risultato, in un'unica modifica annullabile (Ctrl+Z → torna la trascrizione dal vivo).
+ * Se nel frattempo lo spartito è stato modificato (nuova registrazione, editing…) la rifinitura
+ * viene scartata: non si sovrascrive mai il lavoro dell'utente.
+ *
+ * @param {Promise<object|null>} capturedPromise audio della sessione
+ * @param {{ startIndex:number, t0Raw:number|null, settings:object }} session
+ * @param {number} endIndex fine (esclusa) delle note della sessione nel documento
+ * @param {number} revision revisione del documento allo Stop
+ */
+async function refineSession(capturedPromise, session, endIndex, revision) {
+  const captured = await capturedPromise;
+  if (!captured || captured.samples.length < captured.sampleRate * 0.5) return;
+  if (captured.truncated) {
+    docUi.showStatus(`Registrazione oltre ${CONFIG.offline.maxMinutes} minuti: rifinitura non eseguita.`);
+    return;
+  }
+  docUi.showStatus('Rifinitura della trascrizione…', { sticky: true });
+  try {
+    const result = await transcribeInWorker(captured.samples, captured.sampleRate, {}, (p) =>
+      docUi.showStatus(`Rifinitura della trascrizione… ${Math.round(p * 100)}%`, { sticky: true }),
+    );
+    if (doc.revision !== revision) {
+      docUi.showStatus('Lo spartito è stato modificato nel frattempo: rifinitura annullata.');
+      return;
+    }
+    if (result.notes.length === 0) {
+      docUi.showStatus('Rifinitura: nessuna nota riconosciuta, resta la trascrizione dal vivo.');
+      return;
+    }
+    // Tempi della registrazione → performance.now(), la stessa base del metronomo.
+    const toPerf = (sec) => captured.startPerfMs + sec * 1000 - CONFIG.offline.inputLatencyMs;
+    const written = Recorder.quantize(
+      result.notes.map((n) => ({ midi: n.midi, startMs: toPerf(n.start), endMs: toPerf(n.end), transition: n.transition })),
+      session,
+    );
+    doc.replaceRange(session.startIndex, endIndex, written);
+    const cents = Math.round(result.tuningOffset * 100);
+    const tuningNote = cents ? ` Intonazione compensata: ${cents > 0 ? '+' : '−'}${Math.abs(cents)} cent.` : '';
+    docUi.showStatus(`Trascrizione rifinita.${tuningNote} Ctrl+Z per tornare a quella dal vivo.`, { durationMs: 9000 });
+  } catch (err) {
+    console.error(err);
+    docUi.showStatus(`Rifinitura non riuscita: ${err.message}. Resta la trascrizione dal vivo.`, { error: true });
+  }
 }
 
 // ── Riascolto e suono ──────────────────────────────────────────────────────
