@@ -35,8 +35,10 @@ export class ScoreEditor {
     this.#updateToolbar();
   }
 
+  /** Seleziona una nota; la sua voce diventa la voce attiva (frecce, elimina e duplica restano in quella voce). */
   select(id) {
     this.selectedId = id && this.doc.get(id) ? id : null;
+    if (this.selectedId) this.doc.setActiveVoice(this.doc.voiceOf(this.selectedId).id);
     this.#updateToolbar();
     this.onSelectionChange?.();
   }

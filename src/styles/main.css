@@ -616,3 +616,106 @@ body {
   color: var(--muted);
   text-align: center;
 }
+
+/* ── Voci della partitura ──────────────────────────────── */
+.voices {
+  margin: 14px 0 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.voices legend {
+  padding: 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.voice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.voice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+/* voce attiva: dove si registra e cosa si modifica */
+.voice-row.is-active {
+  background: #e7f1fb;
+  border-color: #1971c2;
+}
+
+.voice-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.voice-active input {
+  width: 18px;
+  height: 18px;
+  accent-color: #1971c2;
+}
+
+.voice-name {
+  flex: 1 1 9em;
+  min-width: 7em;
+  padding: 5px 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.voice-select {
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.voice-button {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.voice-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.voice-toggle.is-on {
+  color: #fff;
+  background: #1971c2;
+  border-color: #1971c2;
+}
+
+.voice-name:focus-visible,
+.voice-select:focus-visible,
+.voice-button:focus-visible,
+.voice-active input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}

@@ -190,10 +190,19 @@ export class Recorder {
    * coincide con una stanghetta.
    */
   #padToMeasure(timeSignature) {
-    if (this.doc.notes.length === 0) return;
-    const { measureBeats } = timeSignatureInfo(timeSignature);
-    const total = this.doc.notes.reduce((sum, n) => sum + n.beats, 0);
-    const remainder = total % measureBeats;
-    if (remainder > 1e-9) this.doc.append({ midi: null, beats: measureBeats - remainder });
+    const rest = restToCompleteMeasure(this.doc.notes, timeSignature);
+    if (rest > 0) this.doc.append({ midi: null, beats: rest });
   }
+}
+
+/**
+ * Durata (beats) della pausa che completa l'ultima battuta; 0 se è già completa o non ci sono note.
+ * @param {Array<{ beats:number }>} notes
+ * @param {string} timeSignature
+ */
+export function restToCompleteMeasure(notes, timeSignature) {
+  const { measureBeats } = timeSignatureInfo(timeSignature);
+  const total = notes.reduce((sum, n) => sum + n.beats, 0);
+  const remainder = total % measureBeats;
+  return remainder > 1e-9 ? measureBeats - remainder : 0;
 }

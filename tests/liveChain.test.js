@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectPitchMPM } from '../src/audio/pitchDetector.js';
+import { detectVoicePitch } from '../src/audio/pitchDetector.js';
 import { NoiseGate, computeRms, rmsToDb } from '../src/audio/noiseGate.js';
 import { NoteStabilizer } from '../src/music/noteStabilizer.js';
 import { TuningEstimator } from '../src/music/tuning.js';
@@ -21,12 +21,13 @@ const audioInTune = synthVoice(TEST_MELODY, SR);
  * Riproduce la catena dal vivo di main.js frame per frame (AnalyserNode → gate → MPM →
  * correzione dell'intonazione → stabilizzatore), come farebbe requestAnimationFrame.
  */
-function runLive(signal, { tuning = true, fps = 60, withDb = true } = {}) {
+function runLive(signal, { tuning = true, fps = 60, withDb = true, lowpassHz = CONFIG.pitch.lowpassHz } = {}) {
   const N = CONFIG.audio.fftSize;
   const hop = Math.round(SR / fps);
   const gate = new NoiseGate(CONFIG.gate);
   const stab = new NoteStabilizer(CONFIG.stabilizer);
   const tuner = new TuningEstimator(CONFIG.tuning);
+  const pitch = { ...CONFIG.pitch, lowpassHz };
   const written = [];
   for (let end = N; end <= signal.length; end += hop) {
     const buf = signal.subarray(end - N, end);
@@ -36,7 +37,7 @@ function runLive(signal, { tuning = true, fps = 60, withDb = true } = {}) {
     const offset = tuning ? tuner.offset : 0;
     let midi = null;
     if (open) {
-      const r = detectPitchMPM(buf, SR, CONFIG.pitch);
+      const r = detectVoicePitch(buf, SR, pitch);
       if (r && r.clarity >= CONFIG.pitch.minClarity) midi = hzToMidi(r.hz) - offset;
     }
     for (const ev of stab.process(midi, ms, open, withDb ? db : null)) {
@@ -95,13 +96,25 @@ describe('catena dal vivo', () => {
       const open = gate.process(db, ms);
       let midi = null;
       if (open) {
-        const r = detectPitchMPM(buf, SR, CONFIG.pitch);
+        const r = detectVoicePitch(buf, SR, CONFIG.pitch);
         if (r && r.clarity >= CONFIG.pitch.minClarity) midi = hzToMidi(r.hz);
       }
       for (const ev of stab.process(midi, ms, open, db)) (ev.type === 'noteOn' ? ons : offs).push(ev.midi);
     }
     expect(offs).toEqual(pitches);
     expect(ons).toEqual(pitches); // annunciate già con l'altezza giusta (synth e anteprima corretti)
+  });
+
+  it('REGRESSIONE: voce con soffio (rumore a banda larga, ~12 dB sotto le armoniche fino a 4 kHz) → tutte le note', () => {
+    // Senza passa-basso il soffio sopra i 3–4 kHz abbassava la chiarezza di MPM sotto la soglia:
+    // fotogrammi scartati come "non intonati", note perse o spezzate anche con la voce ben udibile.
+    const breathy = synthVoice(TEST_MELODY, SR, { breath: 0.08 });
+    expect(runLive(breathy)).toEqual(TEST_MELODY_EXPECTED);
+  });
+
+  it('stesso canto senza passa-basso: note perse (confronto)', () => {
+    const breathy = synthVoice(TEST_MELODY, SR, { breath: 0.08 });
+    expect(runLive(breathy, { lowpassHz: 0 })).not.toEqual(TEST_MELODY_EXPECTED);
   });
 
   it('anche a 144 fps', () => {

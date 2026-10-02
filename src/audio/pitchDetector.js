@@ -1,4 +1,5 @@
 import { computeRms, rmsToDb } from './noiseGate.js';
+import { lowpass } from './lowpass.js';
 
 /**
  * Pitch detection con l'algoritmo McLeod Pitch Method (MPM).
@@ -107,6 +108,20 @@ export function detectPitchMPM(buffer, sampleRate, { minHz = 65, maxHz = 1100, p
 }
 
 /**
+ * Pitch di una finestra di voce: passa-basso (vedi lowpass.js) e poi MPM.
+ * È la funzione usata dall'analisi dal vivo; `lowpassHz: 0` la riduce a MPM sul segnale grezzo.
+ *
+ * @param {Float32Array} buffer
+ * @param {number} sampleRate
+ * @param {{ lowpassHz?:number, minHz?:number, maxHz?:number, peakThreshold?:number }} [options]
+ * @param {Float32Array} [scratch] buffer per il segnale filtrato (riusato a ogni frame)
+ */
+export function detectVoicePitch(buffer, sampleRate, { lowpassHz = 0, ...mpm } = {}, scratch = undefined) {
+  const input = lowpassHz ? lowpass(buffer, sampleRate, lowpassHz, scratch) : buffer;
+  return detectPitchMPM(input, sampleRate, mpm);
+}
+
+/**
  * Loop di analisi in tempo reale: ad ogni frame (requestAnimationFrame, ~60 fps) legge i
  * campioni dall'AnalyserNode, applica il noise gate e, solo se il gate è aperto, stima il pitch.
  *
@@ -130,6 +145,7 @@ export class PitchAnalyzer {
     this.onFrame = onFrame;
     // Buffer allocato una sola volta: niente garbage a 60 fps.
     this.buffer = new Float32Array(analyser.fftSize);
+    this.filtered = new Float32Array(analyser.fftSize);
     this.rafId = null;
     this.tick = this.tick.bind(this);
   }
@@ -156,7 +172,7 @@ export class PitchAnalyzer {
     let clarity = 0;
     // Noise gate: con il gate chiuso non si esegue la detection (risparmio di CPU e niente note fantasma).
     if (gateOpen) {
-      const result = detectPitchMPM(this.buffer, this.sampleRate, this.pitchOptions);
+      const result = detectVoicePitch(this.buffer, this.sampleRate, this.pitchOptions, this.filtered);
       if (result && result.clarity >= this.minClarity) {
         hz = result.hz;
         clarity = result.clarity;

@@ -12,6 +12,7 @@ function dbToPercent(db) {
 
 /**
  * @param {{ onToggle:() => void, onHeadphonesChange:(v:boolean) => void,
+ *           onAccompanyChange:(v:boolean) => void, accompany:boolean,
  *           onPlayToggle:() => void, onPreview:() => void,
  *           onSoundChange:(change:{ instrument?:string, octave?:number, brightness?:number, reverb?:number, volumeDb?:number }) => void,
  *           instruments:Record<string,{label:string}>, sound:object, gateOpenDb:number }} handlers
@@ -19,6 +20,8 @@ function dbToPercent(db) {
 export function createControls({
   onToggle,
   onHeadphonesChange,
+  onAccompanyChange,
+  accompany,
   onPlayToggle,
   onPreview,
   onSoundChange,
@@ -48,6 +51,9 @@ export function createControls({
 
   toggleBtn.addEventListener('click', onToggle);
   headphonesInput.addEventListener('change', () => onHeadphonesChange(headphonesInput.checked));
+  const accompanyInput = $('accompany');
+  accompanyInput.checked = accompany;
+  accompanyInput.addEventListener('change', () => onAccompanyChange(accompanyInput.checked));
 
   // ── Riascolto e suono ──
   const playBtn = $('play-score');

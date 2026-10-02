@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { ScoreDocument } from '../src/music/scoreDocument.js';
 import { toMusicXML } from '../src/music/musicxml.js';
 
-function docWith(notes, settings = {}) {
+function docWith(notes, { clef, ...settings } = {}) {
   const doc = new ScoreDocument();
   doc.setSettings(settings);
+  if (clef) doc.setVoiceClef(doc.voice.id, clef);
   for (const [midi, beats] of notes) doc.append({ midi, beats });
   return doc;
 }
@@ -55,6 +56,28 @@ describe('toMusicXML', () => {
     for (const m of measures) {
       const total = [...m.matchAll(/<duration>(\d+)<\/duration>/g)].reduce((s, x) => s + Number(x[1]), 0);
       expect(total).toBe(12); // 6/8 = 3 semiminime = 12 divisioni
+    }
+  });
+
+  it('partitura: una parte per voce, con nome e chiave; stesse battute in tutte; tempo solo nella prima', () => {
+    const doc = docWith([[72, 4], [74, 2]]);
+    doc.renameVoice(doc.voice.id, 'Soprano');
+    const bass = doc.addVoice('Basso & Co');
+    doc.append({ midi: 48, beats: 1 }, bass);
+    doc.setVoiceClef(bass, 'bass');
+    const xml = toMusicXML(doc, { date });
+    expect(xml).toContain('<score-part id="P1"><part-name>Soprano</part-name></score-part>');
+    expect(xml).toContain('<score-part id="P2"><part-name>Basso &amp; Co</part-name></score-part>');
+    const parts = xml.match(/<part id="P\d">[\s\S]*?<\/part>/g);
+    expect(parts).toHaveLength(2);
+    expect(parts.map((p) => count(p, '<measure '))).toEqual([2, 2]); // il basso completato con pause
+    expect(parts[1]).toContain('<clef><sign>F</sign><line>4</line></clef>');
+    expect(count(xml, '<metronome>')).toBe(1);
+    for (const part of parts) {
+      for (const m of part.match(/<measure [\s\S]*?<\/measure>/g)) {
+        const total = [...m.matchAll(/<duration>(\d+)<\/duration>/g)].reduce((s, x) => s + Number(x[1]), 0);
+        expect(total).toBe(16);
+      }
     }
   });
 

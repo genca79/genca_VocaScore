@@ -1,20 +1,21 @@
 import { GRID_OPTIONS, MAX_BPM, MIN_BPM } from '../music/scoreDocument.js';
 import { TIME_SIGNATURES } from '../music/notation.js';
+import { AUDIO_FILE_ACCEPT } from '../music/audioFile.js';
 
 /**
- * Controlli del documento: titolo, BPM, tempo (indicazione di misura), chiave, quantizzazione,
- * metronomo, nomi delle note, e i comandi Nuovo / Apri / Salva / MusicXML / PDF.
+ * Controlli del documento: titolo, BPM, tempo (indicazione di misura), quantizzazione, metronomo,
+ * nomi delle note, e i comandi Nuovo / Apri / Carica Audio ALA / Salva / MusicXML / PDF.
+ * (La chiave è per voce: vedi voicePanel.js.)
  *
  * I campi si aggiornano dal documento a ogni modifica (anche dopo annulla o apri).
  * Il titolo si conferma all'uscita dal campo o con Invio: così ogni lettera digitata
  * non diventa un passo di "annulla".
  */
-export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMusicXml, onExportPdf }) {
+export function createDocumentControls(doc, { onNew, onOpen, onLoadAudio, onSave, onExportMusicXml, onExportPdf }) {
   const $ = (id) => document.getElementById(id);
   const title = $('score-title');
   const bpm = $('bpm');
   const timeSignature = $('time-signature');
-  const clef = $('clef');
   const names = $('note-names');
   const grid = $('grid');
   const metronome = $('metronome');
@@ -36,7 +37,6 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
   title.addEventListener('keydown', (e) => e.key === 'Enter' && title.blur());
   bpm.addEventListener('change', () => doc.setSettings({ bpm: Number(bpm.value) }));
   timeSignature.addEventListener('change', () => doc.setSettings({ timeSignature: timeSignature.value }));
-  clef.addEventListener('change', () => doc.setSettings({ clef: clef.value }));
   names.addEventListener('change', () => doc.setSettings({ showNoteNames: names.checked }));
 
   $('new-score').addEventListener('click', onNew);
@@ -59,12 +59,28 @@ export function createDocumentControls(doc, { onNew, onOpen, onSave, onExportMus
     if (file) onOpen(file);
   });
 
+  const audioButton = $('load-audio');
+  const audioInput = $('load-audio-file');
+  audioInput.accept = AUDIO_FILE_ACCEPT;
+  audioButton.addEventListener('click', () => audioInput.click());
+  audioInput.addEventListener('change', async () => {
+    const files = [...audioInput.files];
+    audioInput.value = ''; // permette di ricaricare gli stessi file
+    if (files.length === 0) return;
+    // decodifica e trascrizione richiedono qualche secondo: niente secondo caricamento nel frattempo
+    audioButton.disabled = true;
+    try {
+      await onLoadAudio(files);
+    } finally {
+      audioButton.disabled = false;
+    }
+  });
+
   const sync = () => {
     const s = doc.settings;
     if (document.activeElement !== title) title.value = s.title;
     bpm.value = String(s.bpm);
     timeSignature.value = s.timeSignature;
-    clef.value = s.clef;
     names.checked = s.showNoteNames;
     grid.value = String(s.grid);
     metronome.checked = s.metronome;

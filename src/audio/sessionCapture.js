@@ -56,6 +56,34 @@ export class SessionCapture {
   }
 
   /**
+   * performance.now() del primo campione catturato: la stessa base dei tempi del metronomo.
+   * null finché il thread audio non ha elaborato il primo blocco.
+   */
+  get startPerfMs() {
+    if (this.startCtxTime === null) return null;
+    const raw = Tone.getContext().rawContext;
+    return performance.now() - raw.currentTime * 1000 + this.startCtxTime * 1000;
+  }
+
+  /**
+   * Copia dell'audio catturato finora, da `fromSample` in poi (trascrizione dal vivo, durante la
+   * sessione). Il campione è un indice alla frequenza `sampleRate` della cattura.
+   * @param {number} fromSample
+   * @returns {Float32Array}
+   */
+  samplesFrom(fromSample) {
+    const from = Math.max(0, Math.min(this.length, Math.round(fromSample)));
+    const out = new Float32Array(this.length - from);
+    let offset = 0; // posizione del chunk corrente nell'audio catturato
+    for (const chunk of this.chunks) {
+      const end = offset + chunk.length;
+      if (end > from) out.set(chunk.subarray(Math.max(0, from - offset)), Math.max(0, offset - from));
+      offset = end;
+    }
+    return out;
+  }
+
+  /**
    * Ferma la cattura e restituisce l'audio. Va chiamata PRIMA di spegnere il microfono.
    * @returns {Promise<{ samples:Float32Array, sampleRate:number, startPerfMs:number, truncated:boolean }|null>}
    */
@@ -77,13 +105,10 @@ export class SessionCapture {
     }
     this.chunks = [];
 
-    // Orologio audio → performance.now(), lo stesso riferimento usato da metronomo e registrazione.
-    const raw = Tone.getContext().rawContext;
-    const perfAtCtxZero = performance.now() - raw.currentTime * 1000;
     return {
       samples,
       sampleRate: this.sampleRate,
-      startPerfMs: perfAtCtxZero + this.startCtxTime * 1000,
+      startPerfMs: this.startPerfMs, // orologio audio → performance.now(), come il metronomo
       truncated: this.truncated,
     };
   }

@@ -6,13 +6,17 @@ import { midiToHz } from '../../src/music/noteUtils.js';
  * intonazione globale spostata (detune) e rumore di fondo. Deterministico (seed fisso).
  *
  * @param {Array<{ midi:number, start:number, end:number, vibrato?:number, scoopFrom?:number,
- *                 dips?:number[], drift?:number, offset?:number }>} notes tempi in secondi;
- *   offset = stonatura propria della nota (semitoni), in aggiunta al detune globale
+ *                 dips?:number[], drift?:number, offset?:number, onset?:{ semitones:number, sec:number } }>} notes
+ *   tempi in secondi; offset = stonatura propria della nota (semitoni), in aggiunta al detune globale;
+ *   onset = entrata "da fuori": per i primi `sec` secondi la voce sta `semitones` sopra (o sotto) la
+ *   nota, poi la raggiunge senza stacco (tipico della voce reale: 100–160 ms, fino a 2 semitoni)
  * @param {number} sampleRate
- * @param {{ detune?:number, noise?:number, tail?:number, hum?:{ hz:number, db:number } }} [options]
- *   detune in semitoni; hum = ronzio costante di fondo (es. rete elettrica a 100 Hz)
+ * @param {{ detune?:number, noise?:number, tail?:number, hum?:{ hz:number, db:number }, breath?:number }} [options]
+ *   detune in semitoni; hum = ronzio costante di fondo (es. rete elettrica a 100 Hz);
+ *   breath = ampiezza del soffio della voce: rumore a banda larga che segue il volume della nota
+ *   (respiro, sibilanti, fruscio del microfono: quasi tutto sopra i 3–4 kHz nella voce reale)
  */
-export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail = 0.4, hum = null } = {}) {
+export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail = 0.4, hum = null, breath = 0 } = {}) {
   const total = Math.max(...notes.map((n) => n.end)) + tail;
   const out = new Float32Array(Math.ceil(total * sampleRate));
   let seed = 12345;
@@ -30,6 +34,7 @@ export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail
       if (n.vibrato) midi += n.vibrato * Math.sin(2 * Math.PI * 5.5 * local);
       if (n.drift) midi += n.drift * Math.sin((2 * Math.PI * local) / (n.end - n.start));
       if (n.scoopFrom !== undefined && local < 0.09) midi += (n.scoopFrom - n.midi) * (1 - local / 0.09);
+      if (n.onset && local < n.onset.sec) midi += n.onset.semitones;
       phase += (2 * Math.PI * midiToHz(midi)) / sampleRate;
 
       let amp = Math.min(1, local / 0.03, (n.end - t) / 0.03);
@@ -38,6 +43,7 @@ export function synthVoice(notes, sampleRate, { detune = 0, noise = 0.0005, tail
         amp *= 1 - 0.9 * Math.exp(-x * x); // calo di ~20 dB per la consonante
         if (Math.abs(t - d) < 0.02) v += rand() * 0.01; // rumore della consonante
       }
+      if (breath) v += breath * amp * rand();
       v += 0.08 * amp * (Math.sin(phase) + 0.5 * Math.sin(2 * phase) + 0.3 * Math.sin(3 * phase) + 0.15 * Math.sin(4 * phase));
     }
     out[i] = v;

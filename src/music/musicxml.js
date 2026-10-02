@@ -1,5 +1,5 @@
 import { NOTE_NAMES } from './noteUtils.js';
-import { chooseClef, layoutMeasures, timeSignatureInfo } from './notation.js';
+import { alignVoices, chooseClef, layoutMeasures, timeSignatureInfo } from './notation.js';
 
 /**
  * Esportazione MusicXML 4.0 (partwise), il formato di scambio standard tra programmi di notazione
@@ -10,6 +10,9 @@ import { chooseClef, layoutMeasures, timeSignatureInfo } from './notation.js';
  *
  * Durate: <divisions>4</divisions> = 4 unità per semiminima, quindi la semicroma (la griglia
  * minima del modello) vale 1 e tutte le durate sono interi: durata = beats × 4.
+ *
+ * Partitura: una <part> per voce, con il nome dato dall'utente e la sua chiave. Tutte le parti hanno
+ * lo stesso numero di battute (le voci più corte sono completate con pause, vedi alignVoices).
  */
 
 const DIVISIONS = 4;
@@ -25,22 +28,39 @@ const escapeXml = (s) =>
  * @returns {string} documento MusicXML
  */
 export function toMusicXML(doc, { date = new Date() } = {}) {
-  const { title, bpm, timeSignature, clef: clefSetting } = doc.settings;
+  const { title, timeSignature } = doc.settings;
+  // Battute piene in tutte le voci: MusicXML (e i programmi che lo leggono) se le aspettano.
+  const voices = alignVoices(doc.voices, timeSignature, { toMeasure: true });
+  const partIds = voices.map((_, i) => `P${i + 1}`);
+
+  const isoDate = date.toISOString().slice(0, 10);
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
+    '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">',
+    '<score-partwise version="4.0">',
+    `<work><work-title>${escapeXml(title.trim() || 'Senza titolo')}</work-title></work>`,
+    `<identification><encoding><software>GENCA VocaScore</software><encoding-date>${isoDate}</encoding-date></encoding></identification>`,
+    '<part-list>',
+    ...voices.map((v, i) => `<score-part id="${partIds[i]}"><part-name>${escapeXml(v.name)}</part-name></score-part>`),
+    '</part-list>',
+    ...voices.flatMap((v, i) => [`<part id="${partIds[i]}">`, ...partMeasures(v, doc.settings, i === 0), '</part>']),
+    '</score-partwise>',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Battute di una voce. L'indicazione metronomica va solo nella prima parte (vale per tutta la partitura).
+ * @returns {string[]}
+ */
+function partMeasures(voice, { bpm, timeSignature }, withTempo) {
   const { num, den, measureBeats } = timeSignatureInfo(timeSignature);
-  const pitches = doc.notes.filter((n) => n.midi !== null).map((n) => n.midi);
-  const clef = clefSetting === 'auto' ? chooseClef(pitches, 'treble') : clefSetting;
-
-  // L'ultima battuta viene completata con pause: MusicXML (e i programmi che lo leggono) si
-  // aspettano battute piene.
-  const notes = [...doc.notes];
-  const total = notes.reduce((sum, n) => sum + n.beats, 0);
-  const remainder = total % measureBeats;
-  if (notes.length > 0 && remainder > 1e-9) notes.push({ id: '__pad', midi: null, beats: measureBeats - remainder });
-
-  const measures = notes.length > 0 ? layoutMeasures(notes, timeSignature) : [[]];
+  const pitches = voice.notes.filter((n) => n.midi !== null).map((n) => n.midi);
+  const clef = voice.clef === 'auto' ? chooseClef(pitches, 'treble') : voice.clef;
+  const measures = voice.notes.length > 0 ? layoutMeasures(voice.notes, timeSignature) : [[]];
   let previousTied = false; // il segmento precedente era legato a questo
 
-  const measureXml = measures.map((segments, i) => {
+  return measures.map((segments, i) => {
     const parts = [];
     if (i === 0) {
       parts.push(
@@ -50,14 +70,18 @@ export function toMusicXML(doc, { date = new Date() } = {}) {
         `<time><beats>${num}</beats><beat-type>${den}</beat-type></time>`,
         clef === 'bass' ? '<clef><sign>F</sign><line>4</line></clef>' : '<clef><sign>G</sign><line>2</line></clef>',
         '</attributes>',
-        '<direction placement="above"><direction-type><metronome>',
-        `<beat-unit>quarter</beat-unit><per-minute>${bpm}</per-minute>`,
-        `</metronome></direction-type><sound tempo="${bpm}"/></direction>`,
       );
+      if (withTempo) {
+        parts.push(
+          '<direction placement="above"><direction-type><metronome>',
+          `<beat-unit>quarter</beat-unit><per-minute>${bpm}</per-minute>`,
+          `</metronome></direction-type><sound tempo="${bpm}"/></direction>`,
+        );
+      }
     }
 
     if (segments.length === 0) {
-      // spartito vuoto: una battuta di pausa
+      // voce vuota: una battuta di pausa
       parts.push(`<note><rest measure="yes"/><duration>${measureBeats * DIVISIONS}</duration><voice>1</voice></note>`);
     }
 
@@ -69,21 +93,6 @@ export function toMusicXML(doc, { date = new Date() } = {}) {
     if (i === measures.length - 1) parts.push('<barline location="right"><bar-style>light-heavy</bar-style></barline>');
     return `<measure number="${i + 1}">${parts.join('')}</measure>`;
   });
-
-  const isoDate = date.toISOString().slice(0, 10);
-  return [
-    '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
-    '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">',
-    '<score-partwise version="4.0">',
-    `<work><work-title>${escapeXml(title.trim() || 'Senza titolo')}</work-title></work>`,
-    `<identification><encoding><software>GENCA VocaScore</software><encoding-date>${isoDate}</encoding-date></encoding></identification>`,
-    '<part-list><score-part id="P1"><part-name>Voce</part-name></score-part></part-list>',
-    '<part id="P1">',
-    ...measureXml,
-    '</part>',
-    '</score-partwise>',
-    '',
-  ].join('\n');
 }
 
 /**

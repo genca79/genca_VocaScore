@@ -5,6 +5,7 @@ import {
   Stave,
   StaveNote,
   StaveTie,
+  StaveConnector,
   Voice,
   Formatter,
   Accidental,
@@ -14,21 +15,24 @@ import {
   BarlineType,
 } from 'vexflow/bravura';
 import { midiToNoteName, midiToVexKey } from '../music/noteUtils.js';
-import { chooseClef, layoutMeasures, timeSignatureInfo } from '../music/notation.js';
+import { alignVoices, chooseClef, layoutMeasures, timeSignatureInfo } from '../music/notation.js';
 
-const COLORS = { live: '#e8590c', selected: '#1971c2', playing: '#2f9e44' };
+const COLORS = { live: '#e8590c', selected: '#1971c2', playing: '#2f9e44', name: '#1f2328' };
 const REST_KEY = { treble: 'b/4', bass: 'd/3' }; // posizione verticale centrale della pausa
 const SIDE = 10; // margine orizzontale del rigo
-const STAVE_TOP = 40; // spazio sopra il rigo (tagli addizionali delle note acute)
-const TEMPO_SPACE = 22; // spazio extra per l'indicazione metronomica sul primo rigo
-const SYSTEM_HEIGHT = 175; // include lo spazio sotto il rigo per note gravi, gambi in giù e nomi delle note
+const STAVE_TOP = 40; // spazio sopra il primo rigo (tagli addizionali delle note acute)
+const TEMPO_SPACE = 22; // spazio extra per l'indicazione metronomica sul primo sistema
+const STAFF_HEIGHT = 175; // un rigo: include lo spazio sotto per note gravi, gambi in giù e nomi delle note
+const NAME_WIDTH = 84; // colonna dei nomi delle voci (solo con più voci)
+const NAME_MAX_CHARS = 11;
 
 /**
- * Pentagramma completo con battute, impaginato su più righi (sistemi) che vanno a capo.
- * Usato sia a schermo (SVG, interattivo) sia per il PDF (canvas ad alta risoluzione).
+ * Partitura con battute, impaginata su più sistemi che vanno a capo. Ogni sistema ha un rigo per
+ * voce (nome a sinistra, voce attiva in grassetto), con le battute allineate verticalmente.
+ * Usata sia a schermo (SVG, interattiva) sia per il PDF (canvas ad alta risoluzione).
  *
- * Prestazioni: ogni rigo è un SVG separato e memorizzato con una "chiave" del suo contenuto.
- * A ogni render si ricalcola l'impaginazione (economico) ma si ridisegnano con VexFlow solo i righi
+ * Prestazioni: ogni sistema è un elemento separato, memorizzato con una "chiave" del suo contenuto.
+ * A ogni render si ricalcola l'impaginazione (economico) ma si ridisegnano con VexFlow solo i sistemi
  * cambiati: mentre si canta, di solito solo l'ultimo.
  */
 export class ScoreRenderer {
@@ -44,8 +48,8 @@ export class ScoreRenderer {
     this.onSelect = onSelect;
     this.backend = backend;
     this.pixelRatio = pixelRatio;
-    this.cache = []; // [{ key, el }] per rigo
-    this.autoClef = 'treble';
+    this.cache = []; // [{ key, el }] per sistema
+    this.autoClefs = new Map(); // id voce → chiave automatica (con isteresi)
     this.last = null;
 
     if (this.interactive) {
@@ -71,40 +75,65 @@ export class ScoreRenderer {
       requestAnimationFrame(() => {
         scheduled = false;
         lastWidth = this.el.clientWidth;
-        if (this.last) this.render(this.last.doc, this.last.view);
+        if (this.last) this.render(this.last.score, this.last.view);
       });
     }).observe(this.el);
   }
 
   /**
-   * @param {import('../music/scoreDocument.js').ScoreDocument} doc
-   * @param {{ pending?:{ midi:number, beats:number }|null, selectedId?:string|null, playingId?:string|null,
-   *           width?:number, followEnd?:boolean }} [view]
+   * @param {{ settings:object, voices:Array<{ id:string, name:string, clef:string,
+   *           notes:Array<{ id:string, midi:number|null, beats:number, live?:boolean }> }>, activeVoiceId?:string }} score
+   *   lo ScoreDocument, oppure una sua vista con l'anteprima della registrazione (note `live`)
+   * @param {{ selectedId?:string|null, playingIds?:Set<string>, width?:number, followEnd?:boolean,
+   *           print?:boolean }} [view] print: niente evidenziazione della voce attiva (PDF)
    */
-  render(doc, view = {}) {
-    this.last = { doc, view };
-    const { timeSignature, bpm, showNoteNames } = doc.settings;
-    const notes = view.pending ? [...doc.notes, { id: 'live', live: true, ...view.pending }] : doc.notes;
+  render(score, view = {}) {
+    this.last = { score, view };
+    const { timeSignature, bpm, showNoteNames } = score.settings;
+    const voices = alignVoices(score.voices, timeSignature);
+    const multi = voices.length > 1;
 
-    const clef = this.#resolveClef(doc.settings.clef, notes);
-    const measures = layoutMeasures(notes, timeSignature);
-    for (const seg of measures.flat()) seg.color = segmentColor(seg, view);
+    const staffs = voices.map((voice) => {
+      const measures = layoutMeasures(voice.notes, timeSignature);
+      for (const seg of measures.flat()) seg.color = segmentColor(seg, view);
+      return {
+        name: voice.name,
+        active: multi && !view.print && voice.id === score.activeVoiceId,
+        clef: this.#resolveClef(voice),
+        measures,
+      };
+    });
+    const measureCount = Math.max(...staffs.map((s) => s.measures.length));
+    // Larghezza di ogni battuta: la più esigente tra le voci.
+    const natural = Array.from({ length: measureCount }, (_, j) =>
+      Math.max(...staffs.map((s) => measureWidth(s.measures[j] ?? [], showNoteNames))),
+    );
 
     const width = Math.max(280, view.width ?? this.el.clientWidth);
-    const systems = packSystems(measures, width - 2 * SIDE, showNoteNames);
+    const nameWidth = multi ? NAME_WIDTH : 0;
+    const systems = packSystems(natural, width - 2 * SIDE - nameWidth);
+    const hasNotes = score.voices.some((v) => v.notes.some((n) => !n.live));
+    const pending = score.voices.some((v) => v.notes.some((n) => n.live));
 
     const elements = systems.map((system, index) => {
       const ctx = {
-        system,
+        staffs: staffs.map((s) => ({
+          name: s.name,
+          active: s.active,
+          clef: s.clef,
+          measures: system.indices.map((j) => s.measures[j] ?? []),
+          // il sistema inizia con un segmento legato a quello precedente → mezza legatura entrante
+          tieIn: Boolean(system.indices[0] > 0 && s.measures[system.indices[0] - 1]?.at(-1)?.tieNext),
+        })),
+        widths: system.widths,
         index,
         width,
-        clef,
+        nameWidth,
         timeSignature,
         bpm,
         showNoteNames,
-        isLast: index === systems.length - 1,
-        // barra finale solo a spartito "chiuso" (non mentre si sta cantando una nota)
-        finalBar: index === systems.length - 1 && !view.pending && doc.notes.length > 0,
+        // barra finale solo a spartito "chiuso" (non mentre si sta registrando)
+        finalBar: index === systems.length - 1 && !pending && hasNotes,
       };
       const key = JSON.stringify(ctx);
       if (this.cache[index]?.key === key) return this.cache[index].el;
@@ -114,7 +143,7 @@ export class ScoreRenderer {
     });
     this.cache.length = systems.length;
 
-    // Aggiorna il DOM solo dove serve (i righi invariati restano gli stessi nodi).
+    // Aggiorna il DOM solo dove serve (i sistemi invariati restano gli stessi nodi).
     elements.forEach((el, i) => {
       if (this.el.children[i] !== el) this.el.insertBefore(el, this.el.children[i] ?? null);
     });
@@ -123,16 +152,17 @@ export class ScoreRenderer {
     if (view.followEnd) this.el.scrollTop = this.el.scrollHeight;
   }
 
-  #resolveClef(setting, notes) {
-    if (setting !== 'auto') return setting;
-    const pitches = notes.filter((n) => n.midi !== null).map((n) => n.midi);
-    this.autoClef = chooseClef(pitches, this.autoClef);
-    return this.autoClef;
+  #resolveClef(voice) {
+    if (voice.clef !== 'auto') return voice.clef;
+    const pitches = voice.notes.filter((n) => n.midi !== null).map((n) => n.midi);
+    const clef = chooseClef(pitches, this.autoClefs.get(voice.id) ?? 'treble');
+    this.autoClefs.set(voice.id, clef);
+    return clef;
   }
 
-  #renderSystem({ system, index, width, clef, timeSignature, bpm, showNoteNames, finalBar }) {
+  #renderSystem({ staffs, widths, index, width, nameWidth, timeSignature, bpm, showNoteNames, finalBar }) {
     const top = STAVE_TOP + (index === 0 ? TEMPO_SPACE : 0);
-    const height = SYSTEM_HEIGHT + (index === 0 ? TEMPO_SPACE : 0);
+    const height = top + staffs.length * STAFF_HEIGHT - STAVE_TOP;
     let div;
     let ctx;
     if (this.backend === 'canvas') {
@@ -149,53 +179,78 @@ export class ScoreRenderer {
     div.className = 'score-system';
     const { num, den } = timeSignatureInfo(timeSignature);
     const beamGroups = Beam.getDefaultBeamGroups(timeSignature);
+    const firstStaves = [];
 
-    const drawn = []; // { seg, note } in ordine, per legature e selezione
-    let x = SIDE;
-    system.measures.forEach((measure, j) => {
-      const stave = new Stave(x, top, system.widths[j]);
-      if (j === 0) stave.addClef(clef);
-      if (j === 0 && index === 0) {
-        stave.addTimeSignature(timeSignature);
-        stave.setTempo({ duration: 'q', bpm }, -TEMPO_SPACE / 2);
+    staffs.forEach((staff, p) => {
+      const y = top + p * STAFF_HEIGHT;
+      const drawn = []; // { seg, note } in ordine, per legature e selezione
+      let x = SIDE + nameWidth;
+      staff.measures.forEach((measure, j) => {
+        const stave = new Stave(x, y, widths[j]);
+        if (j === 0) {
+          stave.addClef(staff.clef);
+          firstStaves.push(stave);
+        }
+        if (j === 0 && index === 0) {
+          stave.addTimeSignature(timeSignature);
+          if (p === 0) stave.setTempo({ duration: 'q', bpm }, -TEMPO_SPACE / 2);
+        }
+        if (finalBar && j === staff.measures.length - 1) stave.setEndBarType(BarlineType.END);
+        stave.setContext(ctx).draw();
+        x += widths[j];
+        if (measure.length === 0) return;
+
+        const notes = measure.map((seg) => toStaveNote(seg, staff.clef, showNoteNames));
+        const voice = new Voice({ numBeats: num, beatValue: den }).setMode(Voice.Mode.SOFT).addTickables(notes);
+        // Travature (code unite) raggruppate per movimento secondo l'indicazione di tempo.
+        const beams = Beam.generateBeams(notes, { groups: beamGroups });
+        new Formatter().joinVoices([voice]).formatToStave([voice], stave);
+        voice.draw(ctx, stave);
+        beams.forEach((beam) => beam.setContext(ctx).draw());
+        measure.forEach((seg, k) => drawn.push({ seg, note: notes[k] }));
+      });
+
+      // Legature: tra segmenti consecutivi della stessa nota. Se la legatura attraversa la fine
+      // del sistema si disegnano due mezze legature (uscente qui, entrante all'inizio del successivo).
+      drawn.forEach(({ seg, note }, i) => {
+        if (seg.tieNext) drawTie(ctx, { firstNote: note, lastNote: drawn[i + 1]?.note }, seg.color);
+      });
+      if (staff.tieIn && drawn[0]) drawTie(ctx, { lastNote: drawn[0].note }, drawn[0].seg.color);
+
+      if (nameWidth > 0) drawVoiceName(ctx, staff, y);
+
+      // Collega gli elementi SVG alle note del documento, per la selezione con il clic.
+      if (this.interactive) {
+        for (const { seg, note } of drawn) {
+          if (seg.live || seg.noteId.endsWith('-pad')) continue;
+          div.querySelector(`[id="vf-${note.getAttribute('id')}"]`)?.setAttribute('data-note-id', seg.noteId);
+        }
       }
-      if (finalBar && j === system.measures.length - 1) stave.setEndBarType(BarlineType.END);
-      stave.setContext(ctx).draw();
-      x += system.widths[j];
-      if (measure.length === 0) return;
-
-      const notes = measure.map((seg) => toStaveNote(seg, clef, showNoteNames));
-      const voice = new Voice({ numBeats: num, beatValue: den }).setMode(Voice.Mode.SOFT).addTickables(notes);
-      // Travature (code unite) raggruppate per movimento secondo l'indicazione di tempo.
-      const beams = Beam.generateBeams(notes, { groups: beamGroups });
-      new Formatter().joinVoices([voice]).formatToStave([voice], stave);
-      voice.draw(ctx, stave);
-      beams.forEach((beam) => beam.setContext(ctx).draw());
-      measure.forEach((seg, k) => drawn.push({ seg, note: notes[k] }));
     });
 
-    // Legature: tra segmenti consecutivi della stessa nota. Se la legatura attraversa la fine
-    // del rigo si disegnano due mezze legature (uscente qui, entrante all'inizio del rigo successivo).
-    drawn.forEach(({ seg, note }, i) => {
-      const next = drawn[i + 1];
-      if (seg.tieNext) drawTie(ctx, { firstNote: note, lastNote: next?.note }, seg.color);
-    });
-    if (system.tieIn && drawn[0]) drawTie(ctx, { lastNote: drawn[0].note }, drawn[0].seg.color);
-
-    // Collega gli elementi SVG alle note del documento, per la selezione con il clic.
-    if (this.interactive) {
-      for (const { seg, note } of drawn) {
-        if (seg.live) continue;
-        div.querySelector(`[id="vf-${note.getAttribute('id')}"]`)?.setAttribute('data-note-id', seg.noteId);
-      }
+    // Più voci: linea di sistema e parentesi quadra a sinistra, come nelle partiture corali.
+    if (firstStaves.length > 1) {
+      const [first, last] = [firstStaves[0], firstStaves.at(-1)];
+      new StaveConnector(first, last).setType('singleLeft').setContext(ctx).draw();
+      new StaveConnector(first, last).setType('bracket').setContext(ctx).draw();
     }
     return div;
   }
 }
 
-function segmentColor(seg, { selectedId, playingId }) {
+/** Nome della voce a sinistra del rigo, centrato sulle 5 linee; la voce attiva in grassetto e colorata. */
+function drawVoiceName(ctx, staff, y) {
+  const label = staff.name.length > NAME_MAX_CHARS ? `${staff.name.slice(0, NAME_MAX_CHARS - 1)}…` : staff.name;
+  ctx.save();
+  ctx.setFont('Arial', 12, staff.active ? 'bold' : 'normal');
+  ctx.setFillStyle(staff.active ? COLORS.selected : COLORS.name);
+  ctx.fillText(label, SIDE, y + 44); // il rigo di VexFlow ha la 1ª linea a +40 e l'ultima a +80
+  ctx.restore();
+}
+
+function segmentColor(seg, { selectedId, playingIds }) {
   if (seg.live) return COLORS.live;
-  if (seg.noteId === playingId) return COLORS.playing;
+  if (playingIds?.has(seg.noteId)) return COLORS.playing;
   if (seg.noteId === selectedId) return COLORS.selected;
   return null;
 }
@@ -249,43 +304,40 @@ function measureWidth(measure, showNoteNames) {
 }
 
 /**
- * Distribuisce le battute in righi che vanno a capo (algoritmo greedy) e le "giustifica",
- * cioè le allarga in proporzione fino a riempire il rigo. L'ultimo rigo viene allargato solo se
+ * Distribuisce le battute in sistemi che vanno a capo (algoritmo greedy) e le "giustifica",
+ * cioè le allarga in proporzione fino a riempire il sistema. L'ultimo sistema viene allargato solo se
  * è già pieno per oltre il 70%, altrimenti poche battute risulterebbero stirate.
+ *
+ * @param {number[]} natural larghezza naturale di ogni battuta (la massima tra le voci)
+ * @param {number} usableWidth
+ * @returns {Array<{ indices:number[], widths:number[] }>}
  */
-function packSystems(measures, usableWidth, showNoteNames) {
+function packSystems(natural, usableWidth) {
   const CLEF_W = 40;
   const TIMESIG_W = 30;
   const systems = [];
   let current = null;
 
-  measures.forEach((measure, i) => {
+  natural.forEach((base, j) => {
     const isSystemStart = !current;
     const header = CLEF_W + (systems.length === 0 && isSystemStart ? TIMESIG_W : 0);
-    let w = measureWidth(measure, showNoteNames) + (isSystemStart ? header : 0);
+    let w = base + (isSystemStart ? header : 0);
     if (current && current.total + w > usableWidth) {
       systems.push(current);
       current = null;
       w += CLEF_W;
     }
-    if (!current) {
-      // il rigo inizia con un segmento legato a quello precedente → mezza legatura entrante
-      const prevSeg = measures[i - 1]?.at(-1);
-      current = { measures: [], natural: [], total: 0, tieIn: Boolean(prevSeg?.tieNext) };
-    }
-    current.measures.push(measure);
+    current ??= { indices: [], natural: [], total: 0 };
+    current.indices.push(j);
     current.natural.push(w);
     current.total += w;
   });
   if (current) systems.push(current);
 
-  systems.forEach((system, i) => {
+  return systems.map((system, i) => {
     const isLast = i === systems.length - 1;
     const stretch = !isLast || system.total > usableWidth * 0.7;
     const scale = stretch ? usableWidth / system.total : Math.min(1, usableWidth / system.total);
-    system.widths = system.natural.map((w) => Math.floor(w * scale));
-    delete system.natural;
-    delete system.total;
+    return { indices: system.indices, widths: system.natural.map((w) => Math.floor(w * scale)) };
   });
-  return systems;
 }

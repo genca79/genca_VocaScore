@@ -26,7 +26,9 @@ export class Metronome {
    * @param {{ bpm:number, beatsPerMeasure:number, countInBeats:number,
    *           onBeat?:(info:{ beat:number, accent:boolean, countIn:boolean }) => void }} options
    *   `beat` è negativo durante la battuta di attacco (−4, −3, −2, −1), poi 0, 1, 2…
-   * @returns {number} istante (performance.now(), ms) in cui si SENTE il primo movimento dopo l'attacco
+   * @returns {{ t0Ms:number, t0Ctx:number }} primo movimento dopo l'attacco: t0Ms = istante
+   *   (performance.now(), ms) in cui si SENTE; t0Ctx = istante sull'orologio audio (s) in cui viene
+   *   suonato, per far partire insieme altri suoni (le altre voci della partitura)
    */
   start({ bpm, beatsPerMeasure, countInBeats, onBeat }) {
     this.stop();
@@ -62,7 +64,10 @@ export class Metronome {
 
     // Conversione orologio audio → performance.now(), il riferimento dei timestamp della voce.
     const firstBeatTime = startTime + countInBeats * beatSec;
-    return performance.now() + (firstBeatTime - ctx.currentTime) * 1000 + outputLatencyMs;
+    return {
+      t0Ms: performance.now() + (firstBeatTime - ctx.currentTime) * 1000 + outputLatencyMs,
+      t0Ctx: firstBeatTime,
+    };
   }
 
   stop() {

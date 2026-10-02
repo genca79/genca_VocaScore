@@ -191,8 +191,23 @@ export function fixedGrid(grid) {
  * @returns {{ written:Array<{ midi:number|null, beats:number }>, detectedBpm:number|null }}
  */
 export function transcribeRhythm(notes, { settings, t0Ms, latencyMs = 0 }) {
-  if (notes.length === 0) return { written: [], detectedBpm: null };
-  const onsets = notes.map((n) => n.startMs);
+  const { voices, detectedBpm } = transcribeRhythmVoices([notes], { settings, t0Ms, latencyMs });
+  return { written: voices[0], detectedBpm };
+}
+
+/**
+ * Come transcribeRhythm, per più voci che suonano INSIEME (stesso orologio: es. più file audio che
+ * partono nello stesso istante). Il tempo viene rilevato sugli attacchi di tutte le voci e lo zero è
+ * comune (il battito più vicino al primo attacco di qualunque voce): una voce che entra dopo inizia
+ * con delle pause. La quantizzazione Auto si sceglie voce per voce.
+ *
+ * @param {Array<Array<{ midi:number, startMs:number, endMs:number, transition:boolean }>>} voiceNotes
+ * @returns {{ voices:Array<Array<{ midi:number|null, beats:number }>>, detectedBpm:number|null }}
+ */
+export function transcribeRhythmVoices(voiceNotes, { settings, t0Ms, latencyMs = 0 }) {
+  const all = voiceNotes.flat().sort((a, b) => a.startMs - b.startMs);
+  if (all.length === 0) return { voices: voiceNotes.map(() => []), detectedBpm: null };
+  const onsets = all.map((n) => n.startMs);
 
   let toBeat;
   let detectedBpm = null;
@@ -201,8 +216,8 @@ export function transcribeRhythm(notes, { settings, t0Ms, latencyMs = 0 }) {
   } else {
     const detected = detectBeats(onsets, {
       // le note lunghe cadono più spesso sul battere: pesano di più
-      weights: notes.map((n) => 0.5 + 0.5 * Math.min(1, (n.endMs - n.startMs) / 400)),
-      endMs: notes.at(-1).endMs,
+      weights: all.map((n) => 0.5 + 0.5 * Math.min(1, (n.endMs - n.startMs) / 400)),
+      endMs: Math.max(...all.map((n) => n.endMs)),
       hintBpm: settings.bpm,
     });
     if (detected) {
@@ -214,18 +229,55 @@ export function transcribeRhythm(notes, { settings, t0Ms, latencyMs = 0 }) {
   }
 
   const auto = settings.grid === 'auto';
-  const events = notes.flatMap((n) => [
-    { ms: n.startMs, pos: toBeat(n.startMs), weight: 1 },
-    { ms: n.endMs, pos: toBeat(n.endMs), weight: 0.3 },
-  ]);
-  const snapPos = auto ? autoGrid(events) : fixedGrid(settings.grid);
-  const snapped = new Map(events.map((e) => [e.ms, snapPos(e.pos)]));
-
-  const written = Recorder.quantize(notes, {
-    settings: { ...settings, bpm: detectedBpm ?? settings.bpm },
-    t0Raw: 0,
-    snap: (ms) => snapped.get(ms) ?? snapPos(toBeat(ms)),
-    grid: auto ? 0.25 : settings.grid,
+  const voices = voiceNotes.map((notes) => {
+    if (notes.length === 0) return [];
+    const events = notes.flatMap((n) => [
+      { ms: n.startMs, pos: toBeat(n.startMs), weight: 1 },
+      { ms: n.endMs, pos: toBeat(n.endMs), weight: 0.3 },
+    ]);
+    const snapPos = auto ? autoGrid(events) : fixedGrid(settings.grid);
+    const snapped = new Map(events.map((e) => [e.ms, snapPos(e.pos)]));
+    return Recorder.quantize(notes, {
+      settings: { ...settings, bpm: detectedBpm ?? settings.bpm },
+      t0Raw: 0,
+      snap: (ms) => snapped.get(ms) ?? snapPos(toBeat(ms)),
+      grid: auto ? 0.25 : settings.grid,
+    });
   });
-  return { written, detectedBpm };
+  return { voices, detectedBpm };
+}
+
+/**
+ * Note di una trascrizione (tempi in secondi dall'inizio dell'audio) → note scritte.
+ * Usata per la registrazione dal vivo, allo Stop e per "Carica Audio ALA".
+ *
+ * @param {Array<{ midi:number, start:number, end:number, transition:boolean }>} notes
+ * @param {{ settings:{ bpm:number, grid:number|'auto', timeSignature:string, legato?:boolean },
+ *           t0Ms?:number|null, originMs?:number }} options
+ *   originMs: istante dello 0 dell'audio nella stessa base dei tempi di t0Ms (es. performance.now()
+ *   del primo campione catturato); t0Ms: primo movimento del metronomo, null = tempo rilevato
+ */
+export function writeTranscription(notes, { settings, t0Ms = null, originMs = 0 }) {
+  return transcribeRhythm(toTimed(notes, originMs), { settings, t0Ms });
+}
+
+/**
+ * Più trascrizioni che partono nello stesso istante (più file audio caricati insieme) → note scritte
+ * per ogni voce, con tempo e zero comuni (vedi transcribeRhythmVoices).
+ * @param {Array<Array<{ midi:number, start:number, end:number, transition:boolean }>>} voiceNotes
+ */
+export function writeTranscriptionVoices(voiceNotes, { settings, t0Ms = null, originMs = 0 }) {
+  return transcribeRhythmVoices(
+    voiceNotes.map((notes) => toTimed(notes, originMs)),
+    { settings, t0Ms },
+  );
+}
+
+function toTimed(notes, originMs) {
+  return notes.map((n) => ({
+    midi: n.midi,
+    startMs: originMs + n.start * 1000,
+    endMs: originMs + n.end * 1000,
+    transition: n.transition,
+  }));
 }

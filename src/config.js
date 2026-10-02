@@ -31,6 +31,9 @@ export const CONFIG = {
     maxHz: 1100, // ~C#6
     peakThreshold: 0.9, // costante k dell'algoritmo MPM (scelta del primo picco "abbastanza alto")
     minClarity: 0.8, // sotto questa chiarezza il segnale non è considerato intonato (rumore, sibilanti)
+    // Passa-basso prima di MPM (vedi audio/lowpass.js): toglie respiro, sibilanti e fruscio, che
+    // altrimenti abbassano la chiarezza e fanno perdere note. Deve restare ben sopra maxHz.
+    lowpassHz: 2500,
   },
 
   // Stima dell'intonazione di chi canta (vedi music/tuning.js)
@@ -73,12 +76,15 @@ export const CONFIG = {
     volumeDb: -8,
   },
 
+  // Trascrizione mentre si canta (vedi music/liveTranscriber.js): lo stesso algoritmo della rifinitura,
+  // rieseguito in un Web Worker sull'audio della sessione.
+  live: {
+    updateMs: 500, // ogni quanto si rianalizza (se il giro precedente è finito)
+    contextSec: 12, // tratto recente rianalizzato a ogni giro; le note più vecchie diventano definitive
+  },
+
   score: {
     // BPM, tempo, chiave, griglia e metronomo sono impostazioni del documento (scoreDocument.js).
-    // Ritardo con cui la voce viene "vista" rispetto al click del metronomo: latenza del microfono
-    // (~10–20 ms) + catena di analisi (~20–25 ms, misurati per attacchi e stacchi; vedi recorder.js).
-    inputLatencyMs: 40,
-    liveRedrawMs: 100, // frequenza di ridisegno della nota "in corso"
     autosaveMs: 500, // ritardo del salvataggio automatico della bozza
   },
 };

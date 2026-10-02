@@ -150,6 +150,29 @@ export function layoutMeasures(notes, timeSignature) {
 }
 
 /**
+ * Allinea le voci di una partitura: tutte partono dalla battuta 1, e le più corte vengono completate
+ * con una pausa finale fino alla fine della più lunga (o fino alla fine della battuta, con `toMeasure`).
+ * Così ogni voce ha lo stesso numero di battute e i righi si possono impaginare insieme.
+ *
+ * @template {{ id:string, notes:Array<{ id:string, midi:number|null, beats:number }> }} V
+ * @param {V[]} voices
+ * @param {string} timeSignature
+ * @param {{ toMeasure?:boolean }} [options] toMeasure: completa anche l'ultima battuta (MusicXML)
+ * @returns {V[]} copie delle voci con le note completate (la pausa aggiunta ha id "<voce>-pad")
+ */
+export function alignVoices(voices, timeSignature, { toMeasure = false } = {}) {
+  const { measureBeats } = timeSignatureInfo(timeSignature);
+  const totals = voices.map((v) => v.notes.reduce((sum, n) => sum + n.beats, 0));
+  let target = Math.max(0, ...totals);
+  if (toMeasure && target > 0) target = Math.ceil(target / measureBeats - 1e-9) * measureBeats;
+  return voices.map((voice, i) => {
+    const missing = target - totals[i];
+    if (missing < GRID / 2) return { ...voice, notes: [...voice.notes] };
+    return { ...voice, notes: [...voice.notes, { id: `${voice.id}-pad`, midi: null, beats: missing }] };
+  });
+}
+
+/**
  * Alterazioni secondo le regole della notazione tradizionale:
  *   - un'alterazione vale fino alla fine della battuta, per quella nota e quell'ottava;
  *   - una nota naturale dopo un diesis nella stessa battuta richiede il bequadro (♮);

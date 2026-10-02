@@ -1,4 +1,27 @@
 import { describe, expect, it } from 'vitest';
+import { alignVoices } from '../src/music/notation.js';
+
+describe('alignVoices (partitura: voci di lunghezza diversa)', () => {
+  const voice = (id, beats) => ({ id, notes: beats.map((b, i) => ({ id: `${id}${i}`, midi: 60, beats: b })) });
+  const totals = (voices) => voices.map((v) => v.notes.reduce((s, n) => s + n.beats, 0));
+
+  it('le voci più corte vengono completate con una pausa fino alla più lunga', () => {
+    const aligned = alignVoices([voice('a', [2, 3]), voice('b', [1]), voice('c', [])], '4/4');
+    expect(totals(aligned)).toEqual([5, 5, 5]);
+    expect(aligned[1].notes.at(-1)).toEqual({ id: 'b-pad', midi: null, beats: 4 });
+    expect(aligned[0].notes).toHaveLength(2); // la più lunga resta com'è
+  });
+
+  it('toMeasure: completa anche l’ultima battuta (3/4)', () => {
+    expect(totals(alignVoices([voice('a', [4]), voice('b', [1])], '3/4', { toMeasure: true }))).toEqual([6, 6]);
+  });
+
+  it('non modifica le voci originali', () => {
+    const original = [voice('a', [1]), voice('b', [2])];
+    alignVoices(original, '4/4');
+    expect(original[0].notes).toHaveLength(1);
+  });
+});
 import { figuresForBeats, layoutMeasures, quantizeBeats, timeSignatureInfo } from '../src/music/notation.js';
 
 const fig = (s) => s.duration + (s.dots ? '.' : '');

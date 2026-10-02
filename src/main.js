@@ -1,12 +1,13 @@
 /**
  * Orchestratore: crea i moduli e li collega tramite eventi. Non contiene logica di dominio.
  *
- *   Microfono ─┬→ AnalyserNode → [rAF] → NoiseGate → MPM → hzToNote − intonazione → NoteStabilizer
- *              │                                                                    ├→ SynthEngine (voce live)
- *              │                                                                    └→ Recorder → ScoreDocument
- *              └→ SessionCapture (AudioWorklet) ──Stop──→ Web Worker (trascrizione offline)
- *                                                          └→ ScoreDocument.replaceRange (rifinitura, annullabile)
+ *   Microfono ─┬→ AnalyserNode → [rAF] → NoiseGate → passa-basso → MPM → hzToNote − intonazione → NoteStabilizer
+ *              │                                         (istantaneo: nota rilevata, accordatore)  └→ SynthEngine (voce live)
+ *              └→ SessionCapture (AudioWorklet, in memoria)
+ *                   ├─ ogni 0,5 s → Web Worker (trascrizione) → LiveTranscriber → anteprima sul pentagramma
+ *                   └─ allo Stop  → Web Worker (intera registrazione) → ScoreDocument.replaceRange (annullabile)
  *
+ *   File audio (Carica Audio ALA) → Web Worker (stessa trascrizione) → ScoreDocument.replaceRange
  *   ScoreDocument → ScoreRenderer (+ ScoreEditor) · riascolto · bozza · MusicXML · PDF
  */
 import './styles/main.css';
@@ -22,9 +23,11 @@ import { NoteStabilizer } from './music/noteStabilizer.js';
 import { TuningEstimator } from './music/tuning.js';
 import { transcribeInWorker } from './music/offlineClient.js';
 import { SessionCapture } from './audio/sessionCapture.js';
-import { ScoreDocument } from './music/scoreDocument.js';
-import { Recorder } from './music/recorder.js';
-import { transcribeRhythm } from './music/rhythm.js';
+import { MAX_VOICES, ScoreDocument } from './music/scoreDocument.js';
+import { restToCompleteMeasure } from './music/recorder.js';
+import { decodeAudioFile, titleFromFileName } from './music/audioFile.js';
+import { writeTranscription, writeTranscriptionVoices } from './music/rhythm.js';
+import { LiveTranscriber } from './music/liveTranscriber.js';
 import { timeSignatureInfo } from './music/notation.js';
 import { SynthEngine } from './output/synth.js';
 import { Metronome } from './output/metronome.js';
@@ -36,12 +39,13 @@ import { loadDraft, readJsonFile, saveDraft, saveFile } from './storage/fileStor
 import { createControls } from './ui/controls.js';
 import { createDocumentControls } from './ui/documentControls.js';
 import { ScoreEditor } from './ui/scoreEditor.js';
+import { createVoicePanel } from './ui/voicePanel.js';
 
 const SOUND_STORAGE_KEY = 'vocascore.sound';
+const ACCOMPANY_STORAGE_KEY = 'vocascore.accompany';
 
 // ── Modello e moduli ───────────────────────────────────────────────────────
 const doc = new ScoreDocument();
-const recorder = new Recorder(doc, CONFIG.score);
 const stabilizer = new NoteStabilizer(CONFIG.stabilizer);
 const tuning = new TuningEstimator(CONFIG.tuning);
 const gate = new NoiseGate(CONFIG.gate);
@@ -56,14 +60,25 @@ let metronome = null;
 let input = null;
 /** @type {PitchAnalyzer|null} */
 let analyzer = null;
-/** @type {SessionCapture|null} audio della sessione per la rifinitura */
+/** @type {SessionCapture|null} audio della sessione (in memoria): base della trascrizione */
 let capture = null;
 let state = 'idle';
 
+/**
+ * Registrazione in corso, nella voce `voiceId` (la voce attiva all'avvio). Le note trascritte sono
+ * un'ANTEPRIMA (non entrano nello spartito né nella cronologia di annulla): vengono scritte tutte
+ * insieme allo Stop, in coda alla voce.
+ * @type {null | { voiceId:string, settings:object, t0Ms:number|null, live:LiveTranscriber,
+ *                 preview:Array<object>, busy:boolean, timer:number }}
+ */
+let session = null;
+/** Sessione appena fermata: la sua anteprima resta visibile finché lo spartito non è scritto. */
+let finishing = null;
+/** Registrando una nuova voce, si sentono le altre (solo in cuffia). Preferenza ricordata nel browser. */
+let accompany = loadFlag(ACCOMPANY_STORAGE_KEY, true);
+
 // Stato della vista dello spartito
-let pending = null; // nota in corso: { midi, startMs }
-let playingId = null;
-let liveTimer = null;
+const playing = new Map(); // id voce → id della nota che sta suonando nel riascolto
 let fontsReady = false; // prima del font musicale VexFlow misurerebbe i glifi in modo errato
 
 const score = new ScoreRenderer(document.getElementById('score'), {
@@ -79,6 +94,11 @@ const editor = new ScoreEditor(doc, {
 const ui = createControls({
   onToggle: () => (state === 'running' ? stop() : start()),
   onHeadphonesChange: (value) => guard.setLiveSynth(value),
+  onAccompanyChange: (value) => {
+    accompany = value;
+    saveFlag(ACCOMPANY_STORAGE_KEY, value);
+  },
+  accompany,
   onPlayToggle: togglePlayback,
   onPreview: previewSound,
   onSoundChange: applySoundChange,
@@ -90,39 +110,46 @@ const ui = createControls({
 const docUi = createDocumentControls(doc, {
   onNew: () => {
     engine?.stopPlayback();
+    stop(); // la registrazione in corso viene scritta prima di svuotare
     doc.clear();
     docUi.showStatus('Nuovo spartito. Ctrl+Z per tornare al precedente.');
   },
   onOpen: openScore,
+  onLoadAudio: loadAudio,
   onSave: () => exportFile('vocascore', () => JSON.stringify(doc.toJSON(), null, 2), 'Spartito salvato.'),
   onExportMusicXml: () => exportFile('musicxml', () => toMusicXML(doc), 'MusicXML esportato.'),
   onExportPdf: () => exportFile('pdf', () => exportPdf(doc), 'PDF creato.'),
 });
 
+const voicePanel = createVoicePanel(doc, {
+  list: document.getElementById('voice-list'),
+  addButton: document.getElementById('add-voice'),
+  instruments: INSTRUMENTS,
+  onStatus: (message) => docUi.showStatus(message),
+});
+
 function renderScore() {
   if (!fontsReady) return;
-  const view = { selectedId: editor.selectedId, playingId, followEnd: state === 'running' };
-  if (pending) view.pending = { midi: pending.midi, beats: recorder.liveBeats(performance.now()) };
-  score.render(doc, view);
+  const view = { selectedId: editor.selectedId, playingIds: new Set(playing.values()), followEnd: state === 'running' };
+  // Durante la registrazione: partitura + anteprima della sessione in coda alla sua voce
+  // (in arancione, non selezionabile).
+  const s = session ?? finishing;
+  if (!s || s.preview.length === 0) {
+    score.render(doc, view);
+    return;
+  }
+  const voices = doc.voices.map((v) => (v.id === s.voiceId ? { ...v, notes: [...v.notes, ...s.preview] } : v));
+  score.render({ settings: doc.settings, voices, activeVoiceId: doc.voice.id }, view);
 }
 
 // ── Collegamenti tra moduli ────────────────────────────────────────────────
-bus.on('note:on', (note) => {
-  engine?.liveNoteOn(note.midi);
-  recorder.noteStarted(note.startMs);
-  pending = { midi: note.midi, startMs: note.startMs };
-  // la nota in corso si allunga in tempo reale sul pentagramma
-  clearInterval(liveTimer);
-  liveTimer = setInterval(renderScore, CONFIG.score.liveRedrawMs);
-  renderScore();
-});
+// Lo stabilizzatore dal vivo guida solo il synth e l'intonazione mostrata: le note dello spartito
+// vengono dalla trascrizione dell'audio della sessione (vedi updateLive).
+bus.on('note:on', (note) => engine?.liveNoteOn(note.midi));
 
 bus.on('note:off', (note) => {
   // In una transizione legata il synth non rilascia: il noteOn successivo farà glide.
   if (!note.transition) engine?.liveNoteOff();
-  pending = null;
-  clearInterval(liveTimer);
-  recorder.noteEnded(note); // → doc 'change' → renderScore
   // Il centro della nota (corretto) + la correzione in uso = altezza realmente cantata.
   tuning.observe(note.center + tuning.offset, note.durationMs / 1000);
   ui.setTuning(tuning.cents);
@@ -179,9 +206,10 @@ async function ensureAudio() {
   const ctx = await initAudioContext();
   if (!engine) {
     engine = new SynthEngine({ ...CONFIG.synth, ...sound });
-    engine.onPlaybackChange = (playing) => ui.setPlaying(playing);
-    engine.onPlaybackNote = (id) => {
-      playingId = id;
+    engine.onPlaybackChange = (isPlaying) => ui.setPlaying(isPlaying);
+    engine.onPlaybackNote = (id, voiceId) => {
+      if (id === null && voiceId === null) playing.clear(); // fine del riascolto
+      else playing.set(voiceId, id);
       renderScore();
     };
     // La voce live nasce MUTA: si attiva solo quando il FeedbackGuard conferma le cuffie.
@@ -192,23 +220,85 @@ async function ensureAudio() {
 }
 
 /**
- * Avvia la sessione di registrazione: con il metronomo, una battuta di attacco e poi il primo
- * movimento diventa l'inizio della griglia; senza, la griglia parte dalla prima nota cantata.
+ * Avvia il metronomo: una battuta di attacco, poi il primo movimento è l'inizio della griglia.
+ * @returns {{ t0Ms:number, t0Ctx:number }} primo movimento (performance.now() e orologio audio)
  */
-function beginRecordingSession() {
-  const { bpm, timeSignature, metronome: useMetronome } = doc.settings;
-  if (!useMetronome) {
-    recorder.beginSession(null);
-    return;
-  }
+function startMetronome() {
+  const { bpm, timeSignature } = doc.settings;
   const beatsPerMeasure = Math.round(timeSignatureInfo(timeSignature).measureBeats);
-  const t0 = metronome.start({
+  return metronome.start({
     bpm,
     beatsPerMeasure,
     countInBeats: beatsPerMeasure,
     onBeat: (info) => ui.setBeat(info, beatsPerMeasure),
   });
-  recorder.beginSession(t0);
+}
+
+/** Ci sono note in voci diverse da `voiceId`? (registrazione di una voce che si aggiunge alle altre) */
+function hasOtherVoices(voiceId) {
+  return doc.voices.some((v) => v.id !== voiceId && v.notes.some((n) => n.midi !== null));
+}
+
+/**
+ * Le altre voci suonano mentre si registra, partendo insieme al primo movimento del metronomo, dal
+ * punto in cui la nuova voce verrà scritta. Solo se l'utente lo vuole e l'uscita NON risulta sugli
+ * altoparlanti: altrimenti finirebbero nel microfono e verrebbero trascritte nella voce.
+ * @returns {string|null} avviso per l'utente, se le altre voci non vengono suonate
+ */
+function startAccompaniment(voiceId, startBeat, t0Ctx) {
+  if (!accompany) return null;
+  if (guard.state.autoDetected === false) {
+    return 'L’uscita audio sembra sugli altoparlanti: le altre voci non vengono suonate (finirebbero nel microfono). Usa le cuffie per sentirle.';
+  }
+  engine.play(doc.playbackEvents(null, { fromBeat: startBeat, excludeVoiceId: voiceId }), { at: t0Ctx });
+  return null;
+}
+
+/**
+ * Note trascritte della sessione (s dall'inizio della cattura) → note scritte, con il metronomo
+ * della sessione o con il tempo rilevato. I tempi passano sull'orologio di performance.now(), lo
+ * stesso del metronomo, togliendo la latenza del microfono.
+ */
+function writeSession(s, notes, startPerfMs) {
+  return writeTranscription(notes, {
+    settings: s.settings,
+    t0Ms: s.t0Ms,
+    originMs: startPerfMs - CONFIG.offline.inputLatencyMs,
+  });
+}
+
+/**
+ * Giro di trascrizione dal vivo: l'audio catturato dall'inizio del tratto ancora provvisorio passa
+ * dallo stesso algoritmo della rifinitura (Web Worker); il risultato diventa l'anteprima.
+ * Un giro alla volta: se il precedente non è finito si salta (il prossimo avrà più audio).
+ */
+async function updateLive() {
+  const s = session;
+  if (!s || s.busy || !capture || capture.startPerfMs === null) return;
+  const sr = capture.sampleRate;
+  const fromSample = Math.round(s.live.windowStartSec * sr);
+  const samples = capture.samplesFrom(fromSample);
+  if (samples.length < sr * 0.3) return;
+  const startPerfMs = capture.startPerfMs;
+  s.busy = true;
+  try {
+    const result = await transcribeInWorker(samples, sr, { floorCapDb: s.live.floorCapDb });
+    if (session !== s) return; // sessione fermata nel frattempo: ci pensa finishSession
+    s.live.accept(result, fromSample / sr, (fromSample + samples.length) / sr);
+    s.preview = toPreview(s, writeSession(s, s.live.notes, startPerfMs).written);
+    renderScore();
+  } catch (err) {
+    console.warn('Trascrizione dal vivo non riuscita:', err);
+  } finally {
+    s.busy = false;
+  }
+}
+
+/** Note scritte della sessione → anteprima in coda alla sua voce (da una battuta nuova). */
+function toPreview(s, written) {
+  const rest = restToCompleteMeasure(doc.voiceById(s.voiceId)?.notes ?? [], doc.settings.timeSignature);
+  const notes = rest > 0 ? [{ midi: null, beats: rest }, ...written] : written;
+  return notes.map((n, i) => ({ ...n, id: `live-${i}`, live: true }));
 }
 
 // ── Ciclo di vita del microfono ────────────────────────────────────────────
@@ -233,20 +323,40 @@ async function start() {
     // 3. Rilevazione delle cuffie: solo ora i nomi dei dispositivi sono leggibili (dopo il permesso).
     await guard.init(); // emette 'feedback' → imposta mute della voce live e AEC
 
-    // 4. Cattura dell'audio della sessione (solo in memoria) per la rifinitura dopo lo Stop.
-    if (doc.settings.refine) {
-      try {
-        capture = new SessionCapture(CONFIG.offline);
-        await capture.start(input);
-      } catch (err) {
-        console.warn('Rifinitura non disponibile:', err);
-        capture = null;
-      }
+    // 4. Cattura dell'audio della sessione (solo in memoria): è la base della trascrizione.
+    capture = new SessionCapture(CONFIG.offline);
+    try {
+      await capture.start(input);
+    } catch (err) {
+      console.error(err);
+      throw new Error('Questo browser non permette di registrare l’audio della sessione (AudioWorklet).');
     }
 
-    // 5. Loop di analisi. Le nuove note vengono aggiunte in coda allo spartito.
-    beginRecordingSession();
+    // 5. Metronomo (e altre voci), trascrizione periodica e loop di analisi istantanea (synth, nota rilevata).
+    // Si registra nella voce attiva, in coda alle sue note (da una battuta nuova). Se ci sono già altre
+    // voci il metronomo è sempre attivo: senza un tempo comune la nuova voce non si allineerebbe.
+    const voiceId = doc.voice.id;
+    const { bpm, grid, timeSignature, legato, refine } = doc.settings;
+    const others = hasOtherVoices(voiceId);
+    const beat0 = doc.settings.metronome || others ? startMetronome() : null;
+    const notes = doc.voice.notes;
+    const startBeat = notes.reduce((sum, n) => sum + n.beats, 0) + restToCompleteMeasure(notes, timeSignature);
+    session = {
+      voiceId,
+      settings: { bpm, grid, timeSignature, legato, refine },
+      t0Ms: beat0?.t0Ms ?? null,
+      live: new LiveTranscriber({ contextSec: CONFIG.live.contextSec }),
+      preview: [],
+      busy: false,
+      timer: setInterval(updateLive, CONFIG.live.updateMs),
+    };
+    if (others) {
+      const warning = startAccompaniment(voiceId, startBeat, beat0.t0Ctx);
+      const forced = doc.settings.metronome ? '' : ' Metronomo attivato per allinearla alle altre voci.';
+      docUi.showStatus(`Registrazione in "${doc.voice.name}".${forced}${warning ? ` ${warning}` : ''}`, { durationMs: 8000 });
+    }
     docUi.setRecording(true);
+    voicePanel.setRecording(true);
     analyzer = new PitchAnalyzer(analyser, ctx.sampleRate, {
       gate,
       pitch: CONFIG.pitch,
@@ -257,13 +367,16 @@ async function start() {
     setState('running');
   } catch (err) {
     console.error(err);
+    clearInterval(session?.timer);
+    session = null;
     capture?.stop();
     capture = null;
     input?.stop();
     input = null;
     metronome?.stop();
-    recorder.endSession();
+    engine?.stopPlayback();
     docUi.setRecording(false);
+    voicePanel.setRecording(false);
     ui.setBeat(null);
     setState('idle');
     ui.showError(err?.message ?? String(err));
@@ -274,101 +387,135 @@ function stop() {
   if (state !== 'running') return;
   analyzer?.stop();
   analyzer = null;
-  emitNoteEvents(stabilizer.flush(performance.now())); // prima di endSession: la nota aperta va scritta
-  const session = recorder.sessionInfo;
+  emitNoteEvents(stabilizer.flush(performance.now())); // chiude la nota del synth
+  const s = session;
+  session = null;
+  clearInterval(s.timer);
   const captured = capture?.stop(); // prima di spegnere il microfono
   capture = null;
-  recorder.endSession();
   metronome?.stop();
+  engine?.stopPlayback(); // le altre voci, se suonavano
   ui.setBeat(null);
   docUi.setRecording(false);
+  voicePanel.setRecording(false);
   engine?.liveNoteOff();
   input?.stop();
   input = null;
   setState('idle');
-  if (session && (captured || session.settings.grid === 'auto' || session.t0Raw === null)) {
-    finishSession(captured ?? null, session, doc.notes.length, doc.revision);
-  }
   ui.updateFrame(null);
+  finishing = s; // l'anteprima resta visibile fino alla scrittura
+  finishSession(s, captured);
 }
 
-// ── Fine sessione: rifinitura, tempo rilevato, quantizzazione automatica ────
+// ── Fine sessione: scrittura nello spartito ────────────────────────────────
 
 /**
- * Allo Stop la sessione viene riscritta, in un'unica modifica annullabile (Ctrl+Z → trascrizione
- * dal vivo):
- *   - con la rifinitura: dalle note dell'analisi offline dell'intera registrazione (Web Worker);
- *   - altrimenti, se servono tempo rilevato o quantizzazione Auto: dalle note rilevate dal vivo.
- * In entrambi i casi tempo (metronomo spento → rilevato) e quantizzazione (Auto → per movimento)
- * sono decisi da transcribeRhythm. Se nel frattempo lo spartito è stato modificato la riscrittura
- * viene scartata: non si sovrascrive mai il lavoro dell'utente.
+ * Allo Stop le note della sessione entrano nello spartito, in coda e in un'unica modifica annullabile:
+ *   - "Rifinisci allo Stop" attivo: dall'analisi dell'INTERA registrazione, esattamente come
+ *     "Carica Audio ALA" su un file (intonazione e contesto di tutta la sessione);
+ *   - spento: dalla trascrizione fatta durante il canto, completata con un ultimo giro.
+ * Tempo (metronomo spento → rilevato) e quantizzazione (Auto → per movimento) come in writeTranscription.
  *
- * @param {Promise<object|null>|null} capturedPromise audio della sessione (null se la rifinitura è spenta)
- * @param {ReturnType<Recorder['sessionInfo']>} session
- * @param {number} endIndex fine (esclusa) delle note della sessione nel documento
- * @param {number} revision revisione del documento allo Stop
+ * @param {NonNullable<typeof session>} s sessione appena fermata
+ * @param {Promise<{ samples:Float32Array, sampleRate:number, startPerfMs:number, truncated:boolean }|null>} capturedPromise
  */
-async function finishSession(capturedPromise, session, endIndex, revision) {
-  const needsRhythm = session.settings.grid === 'auto' || session.t0Raw === null;
-  let notes = null;
-  let latencyMs = 0;
-  let tuningOffset = 0;
-  let refined = false;
+async function finishSession(s, capturedPromise) {
+  try {
+    const captured = await capturedPromise;
+    if (!captured || captured.samples.length < captured.sampleRate * 0.3) return;
+    const sr = captured.sampleRate;
+    let notes = null;
+    let tuningOffset = 0;
+    let refined = false;
 
-  const captured = capturedPromise ? await capturedPromise : null;
-  if (captured?.truncated) {
-    docUi.showStatus(`Registrazione oltre ${CONFIG.offline.maxMinutes} minuti: rifinitura non eseguita.`);
-  } else if (captured && captured.samples.length >= captured.sampleRate * 0.5) {
-    docUi.showStatus('Rifinitura della trascrizione…', { sticky: true });
-    try {
-      const result = await transcribeInWorker(captured.samples, captured.sampleRate, {}, (p) =>
-        docUi.showStatus(`Rifinitura della trascrizione… ${Math.round(p * 100)}%`, { sticky: true }),
-      );
-      if (result.notes.length > 0) {
-        // Tempi della registrazione → performance.now(), la stessa base del metronomo.
-        const toPerf = (sec) => captured.startPerfMs + sec * 1000 - CONFIG.offline.inputLatencyMs;
-        notes = result.notes.map((n) => ({ midi: n.midi, startMs: toPerf(n.start), endMs: toPerf(n.end), transition: n.transition }));
+    if (s.settings.refine) {
+      docUi.showStatus('Rifinitura della trascrizione…', { sticky: true });
+      try {
+        const result = await transcribeInWorker(captured.samples.slice(), sr, {}, (p) =>
+          docUi.showStatus(`Rifinitura della trascrizione… ${Math.round(p * 100)}%`, { sticky: true }),
+        );
+        notes = result.notes;
         tuningOffset = result.tuningOffset;
         refined = true;
+      } catch (err) {
+        console.error(err);
+        docUi.showStatus(`Rifinitura non riuscita (${err.message}): uso la trascrizione dal vivo.`, { error: true });
       }
-    } catch (err) {
-      console.error(err);
-      docUi.showStatus(`Rifinitura non riuscita: ${err.message}.`, { error: true });
     }
+    if (!notes) {
+      // Ultimo giro dal vivo sul tratto ancora provvisorio, poi tutto diventa definitivo.
+      const fromSample = Math.round(s.live.windowStartSec * sr);
+      const result = await transcribeInWorker(captured.samples.slice(fromSample), sr, { floorCapDb: s.live.floorCapDb });
+      s.live.accept(result, fromSample / sr, captured.samples.length / sr, { final: true });
+      notes = s.live.notes;
+    }
+    if (notes.length === 0) {
+      docUi.showStatus('Nessuna nota riconosciuta nella registrazione.');
+      return;
+    }
+    const label = [refined ? 'Trascrizione rifinita.' : 'Trascrizione completata.'];
+    if (captured.truncated) label.push(`Trascritti solo i primi ${CONFIG.offline.maxMinutes} minuti.`);
+    // La voce della sessione potrebbe essere stata eliminata nel frattempo (es. Ctrl+Z): si scrive nella voce attiva.
+    const voiceId = doc.voiceById(s.voiceId) ? s.voiceId : doc.voice.id;
+    commitTranscription(writeSession(s, notes, captured.startPerfMs), { tuningOffset, label: label.join(' '), voiceId });
+  } catch (err) {
+    console.error(err);
+    docUi.showStatus(`Trascrizione non riuscita: ${err.message}`, { error: true });
+  } finally {
+    if (finishing === s) finishing = null;
+    renderScore();
   }
-  if (!notes && needsRhythm && session.rawNotes.length > 0) {
-    notes = session.rawNotes; // note dal vivo: i loro tempi hanno la latenza di analisi rispetto al click
-    latencyMs = CONFIG.score.inputLatencyMs;
-  }
-  if (!notes) return;
+}
 
-  if (doc.revision !== revision) {
-    docUi.showStatus('Lo spartito è stato modificato nel frattempo: trascrizione finale annullata.');
+/**
+ * Scrive una trascrizione in coda a una voce, da una battuta nuova, in un'unica modifica annullabile.
+ * Se la partitura è vuota il tempo rilevato diventa il suo; `title` si usa se non ne ha uno.
+ * @param {{ written:Array<{ midi:number|null, beats:number }>, detectedBpm:number|null }} transcription
+ * @param {{ label:string, tuningOffset?:number, title?:string|null, voiceId?:string }} options
+ */
+function commitTranscription({ written, detectedBpm }, { label, tuningOffset = 0, title = null, voiceId = doc.voice.id }) {
+  if (!written.some((n) => n.midi !== null)) {
+    docUi.showStatus('Nessuna nota riconosciuta.');
     return;
   }
-  const { written, detectedBpm } = transcribeRhythm(notes, { settings: session.settings, t0Ms: session.t0Raw, latencyMs });
-  // Il tempo rilevato diventa il tempo dello spartito se questa è la prima registrazione.
-  const bpm = detectedBpm ? Math.round(detectedBpm) : null;
-  const setBpm = bpm !== null && session.startIndex === 0;
-  doc.replaceRange(session.startIndex, endIndex, written, setBpm ? { bpm } : null);
+  const notes = doc.voiceById(voiceId).notes;
+  const start = notes.length;
+  const rest = restToCompleteMeasure(notes, doc.settings.timeSignature);
+  const patch = tempoAndTitle(detectedBpm, title);
+  doc.replaceRange(start, start, [...(rest > 0 ? [{ midi: null, beats: rest }] : []), ...written], patch, voiceId);
+  docUi.showStatus(transcriptionMessage(label, detectedBpm, patch, tuningOffset), { durationMs: 10000 });
+}
 
-  const parts = [refined ? 'Trascrizione rifinita.' : 'Trascrizione completata.'];
-  if (bpm !== null) parts.push(setBpm ? `Tempo rilevato: ${bpm} BPM.` : `Tempo rilevato: ${bpm} BPM (lo spartito resta a ${doc.settings.bpm}).`);
+/** Partitura vuota: il tempo rilevato diventa il suo; titolo proposto se non ne ha uno. */
+function tempoAndTitle(detectedBpm, title) {
+  const patch = {};
+  if (detectedBpm && doc.isEmpty) patch.bpm = Math.round(detectedBpm);
+  if (title && !doc.settings.title) patch.title = title;
+  return patch;
+}
+
+/** Messaggio di stato dopo una trascrizione: tempo rilevato e intonazione compensata. */
+function transcriptionMessage(label, detectedBpm, patch, tuningOffset) {
+  const parts = [label];
+  if (detectedBpm) {
+    const bpm = Math.round(detectedBpm);
+    parts.push(patch.bpm ? `Tempo rilevato: ${bpm} BPM.` : `Tempo rilevato: ${bpm} BPM (la partitura resta a ${doc.settings.bpm}).`);
+  }
   const cents = Math.round(tuningOffset * 100);
   if (cents) parts.push(`Intonazione compensata: ${cents > 0 ? '+' : '−'}${Math.abs(cents)} cent.`);
-  parts.push('Ctrl+Z per tornare a quella dal vivo.');
-  docUi.showStatus(parts.join(' '), { durationMs: 10000 });
+  parts.push('Ctrl+Z per annullare.');
+  return parts.join(' ');
 }
 
 // ── Riascolto e suono ──────────────────────────────────────────────────────
 
 /**
- * Riascolta lo spartito (dalla nota selezionata, se c'è) con lo strumento scelto e ai BPM correnti.
- * Il microfono viene fermato prima: il riascolto può uscire dagli altoparlanti (senza microfono
- * non c'è rischio di Larsen) e non deve essere ri-trascritto.
+ * Riascolta la partitura in polifonia (dalla nota selezionata, se c'è): tutte le voci udibili insieme,
+ * ognuna col suo strumento, ai BPM correnti. Il microfono viene fermato prima: il riascolto può uscire
+ * dagli altoparlanti (senza microfono non c'è rischio di Larsen) e non deve essere ri-trascritto.
  */
 async function togglePlayback() {
-  if (engine?.isPlaying) {
+  if (engine?.isPlaying && state !== 'running') {
     engine.stopPlayback();
     return;
   }
@@ -425,6 +572,77 @@ async function openScore(file) {
   }
 }
 
+/**
+ * "Carica Audio ALA": trascrive uno o più file audio scelti dall'utente (vedi music/audioFile.js),
+ * come registrazioni a metronomo spento (tempo rilevato dagli attacchi). Un'unica modifica annullabile.
+ *   - un file: le note si aggiungono in coda alla voce attiva, da una battuta nuova;
+ *   - più file: una voce per file (col nome del file, poi rinominabile), tutte dalla battuta 1. I file
+ *     partono insieme (stessa esecuzione): tempo rilevato su tutte le voci, zero comune.
+ * @param {File[]} files
+ */
+async function loadAudio(files) {
+  engine?.stopPlayback();
+  stop();
+  const free = MAX_VOICES - doc.voices.length + (doc.voice.notes.length === 0 ? 1 : 0);
+  if (files.length > 1 && files.length > free) {
+    docUi.showStatus(`Troppi file: la partitura può avere al massimo ${MAX_VOICES} voci (posti liberi: ${free}).`, { error: true });
+    return;
+  }
+  let current = '';
+  try {
+    const revision = doc.revision;
+    const results = [];
+    for (const [i, file] of files.entries()) {
+      current = `"${file.name}"`;
+      const step = files.length > 1 ? `File ${i + 1} di ${files.length}: ` : '';
+      docUi.showStatus(`${step}lettura di ${current}…`, { sticky: true });
+      const audio = await decodeAudioFile(file, { maxMinutes: CONFIG.offline.maxMinutes });
+      results.push(
+        await transcribeInWorker(audio.samples, audio.sampleRate, {}, (p) =>
+          docUi.showStatus(`${step}trascrizione di ${current}… ${Math.round(p * 100)}%`, { sticky: true }),
+        ),
+      );
+    }
+    current = '';
+    const empty = files.filter((_, i) => results[i].notes.length === 0).map((f) => `"${f.name}"`);
+    if (empty.length === files.length) {
+      docUi.showStatus(`Nessuna nota riconosciuta in ${empty.join(', ')}.`, { error: true });
+      return;
+    }
+    if (doc.revision !== revision) {
+      docUi.showStatus('La partitura è stata modificata nel frattempo: trascrizione annullata.');
+      return;
+    }
+
+    if (files.length === 1) {
+      const transcription = writeTranscription(results[0].notes, { settings: doc.settings });
+      const count = transcription.written.filter((n) => n.midi !== null).length;
+      commitTranscription(transcription, {
+        label: `Trascritto "${files[0].name}": ${count} note.`,
+        tuningOffset: results[0].tuningOffset,
+        title: titleFromFileName(files[0].name),
+      });
+      return;
+    }
+
+    const { voices, detectedBpm } = writeTranscriptionVoices(
+      results.map((r) => r.notes),
+      { settings: doc.settings },
+    );
+    const patch = tempoAndTitle(detectedBpm, null);
+    doc.importVoices(
+      files.map((file, i) => ({ name: titleFromFileName(file.name), notes: voices[i] })),
+      patch,
+    );
+    let label = `Trascritti ${files.length} file: una voce per file (i nomi si cambiano in "Voci").`;
+    if (empty.length > 0) label += ` Nessuna nota in ${empty.join(', ')}: voce vuota.`;
+    docUi.showStatus(transcriptionMessage(label, detectedBpm, patch, 0), { durationMs: 12000 });
+  } catch (err) {
+    console.error(err);
+    docUi.showStatus(`Impossibile trascrivere ${current || 'i file'}: ${err.message}`, { error: true });
+  }
+}
+
 /** Le preferenze del suono restano nel browser (localStorage): nessun dato lascia il dispositivo. */
 function loadSoundSettings() {
   const defaults = {
@@ -449,6 +667,24 @@ function saveSoundSettings() {
     localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify(sound));
   } catch {
     // ignorato: le preferenze semplicemente non verranno ricordate
+  }
+}
+
+/** Preferenza sì/no ricordata nel browser (default se assente o se lo storage non è disponibile). */
+function loadFlag(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value === 'true';
+  } catch {
+    return fallback;
+  }
+}
+
+function saveFlag(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // ignorato: la preferenza semplicemente non verrà ricordata
   }
 }
 

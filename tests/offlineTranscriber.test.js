@@ -49,6 +49,39 @@ describe('transcribeOffline', () => {
     expect(notes[2].transition).toBe(false); // "la" → "la": nuova sillaba
   });
 
+  it('REGRESSIONE: voce con soffio (rumore a banda larga) → tutte le note', () => {
+    const { notes } = transcribeOffline(synthVoice(TEST_MELODY, SR, { breath: 0.08 }), SR);
+    expect(notes.map((n) => n.midi)).toEqual(TEST_MELODY_EXPECTED);
+  });
+
+  it('stesso canto senza passa-basso: note sbagliate (confronto)', () => {
+    const { notes } = transcribeOffline(synthVoice(TEST_MELODY, SR, { breath: 0.08 }), SR, { lowpassHz: 0 });
+    expect(notes.map((n) => n.midi)).not.toEqual(TEST_MELODY_EXPECTED);
+  });
+
+  // Scala cantata a note staccate (silenzio tra una nota e l'altra), come "do mi sol fa".
+  const SCALE = [60, 64, 67, 65].map((midi, i) => ({ midi, start: 0.4 + i * 0.6, end: 0.4 + i * 0.6 + 0.5, vibrato: 0.25 }));
+
+  it('REGRESSIONE: entrata da sopra o da sotto (150 ms, 1–2 semitoni) → una nota sola, dall’attacco', () => {
+    // Voce reale: "mi" attaccato un semitono sopra per 160 ms, "re" partito due semitoni sotto.
+    // Prima diventavano una nota breve in più (D#3 0.25 | D3 0.75 invece di D3 1).
+    const melody = SCALE.map((n, i) => (i === 1 ? { ...n, onset: { semitones: 1, sec: 0.15 } } : i === 3 ? { ...n, onset: { semitones: -2, sec: 0.15 } } : n));
+    const { notes } = transcribeOffline(synthVoice(melody, SR), SR);
+    expect(notes.map((n) => n.midi)).toEqual([60, 64, 67, 65]);
+    notes.forEach((n, i) => expect(Math.abs(n.start - SCALE[i].start)).toBeLessThan(0.05));
+  });
+
+  it('una nota breve DENTRO una frase legata resta una nota (non è un’entrata)', () => {
+    // 60 legato → 62 breve (150 ms) legato → 64: la 62 non apre un gruppo, è una nota di passaggio vera
+    const melody = [
+      { midi: 60, start: 0.4, end: 0.9 },
+      { midi: 62, start: 0.9, end: 1.05 },
+      { midi: 64, start: 1.05, end: 1.7 },
+    ];
+    const { notes } = transcribeOffline(synthVoice(melody, SR), SR);
+    expect(notes.map((n) => n.midi)).toEqual([60, 62, 64]);
+  });
+
   it('silenzio e rumore: nessuna nota', () => {
     const noise = new Float32Array(SR * 2).map((_, i) => Math.sin(i * 12.9898) * 0.0005);
     expect(transcribeOffline(noise, SR).notes).toEqual([]);

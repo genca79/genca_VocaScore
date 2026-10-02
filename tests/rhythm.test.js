@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoGrid, detectBeats, transcribeRhythm } from '../src/music/rhythm.js';
+import { autoGrid, detectBeats, transcribeRhythm, transcribeRhythmVoices } from '../src/music/rhythm.js';
 
 // Generatore pseudo-casuale deterministico
 function rng(seed) {
@@ -123,5 +123,34 @@ describe('quantizzazione automatica', () => {
     const { written, detectedBpm } = transcribeRhythm(notes, { settings: SETTINGS, t0Ms: notes[0].startMs });
     expect(detectedBpm).toBeNull();
     expect(beatsOf(written).slice(0, -1)).toEqual(rhythm.slice(0, -1));
+  });
+});
+
+describe('più voci insieme (stesso orologio)', () => {
+  // Soprano a semiminime; contralto a minime che entra due movimenti dopo; tempo 100, metronomo spento.
+  const SOPRANO = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+  const ALTO = [2, 2, 2, 2, 2];
+  const startMs = 5000;
+  const beatMs = 600;
+  const soprano = sing(SOPRANO, { bpm: 100, startMs, seed: 11 });
+  const alto = sing(ALTO, { bpm: 100, startMs: startMs + 2 * beatMs, seed: 5 });
+
+  it('tempo rilevato su tutte le voci e zero comune: la voce che entra dopo inizia con una pausa', () => {
+    const { voices, detectedBpm } = transcribeRhythmVoices([soprano, alto], { settings: SETTINGS, t0Ms: null });
+    expect(Math.round(detectedBpm)).toBeGreaterThanOrEqual(97);
+    expect(Math.round(detectedBpm)).toBeLessThanOrEqual(103);
+    expect(beatsOf(voices[0]).slice(0, -1)).toEqual(SOPRANO.slice(0, -1));
+    expect(beatsOf(voices[1]).slice(0, -1)).toEqual(['r2', ...ALTO.slice(0, -1)]);
+  });
+
+  it('una voce sola: identico a transcribeRhythm', () => {
+    const single = transcribeRhythm(soprano, { settings: SETTINGS, t0Ms: null });
+    const multi = transcribeRhythmVoices([soprano], { settings: SETTINGS, t0Ms: null });
+    expect(multi.voices[0]).toEqual(single.written);
+    expect(multi.detectedBpm).toBe(single.detectedBpm);
+  });
+
+  it('una voce vuota resta vuota', () => {
+    expect(transcribeRhythmVoices([soprano, []], { settings: SETTINGS, t0Ms: null }).voices[1]).toEqual([]);
   });
 });

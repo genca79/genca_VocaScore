@@ -29,14 +29,6 @@
             <span>Tempo</span>
             <select id="time-signature"></select>
           </label>
-          <label class="field">
-            <span>Chiave</span>
-            <select id="clef">
-              <option value="auto" title="Scelta in base all'estensione della voce">Auto</option>
-              <option value="treble">Violino</option>
-              <option value="bass">Basso</option>
-            </select>
-          </label>
           <label class="field" title="Risoluzione ritmica. Auto: allo Stop, per ogni movimento si sceglie la suddivisione (intero, metà, quarti) più semplice che rispetta il canto. Durante il canto l'anteprima usa 1/8.">
             <span>Quantizzazione</span>
             <select id="grid"></select>
@@ -46,7 +38,7 @@
             <span>Metronomo</span>
           </label>
           <label class="switch rec-metronome"
-            title="Allo Stop la registrazione viene rianalizzata per intero (solo nel browser) e la trascrizione dal vivo viene sostituita da una più precisa. Ctrl+Z per tornare a quella dal vivo.">
+            title="Allo Stop la registrazione viene rianalizzata per intero (solo nel browser), esattamente come un file caricato con Carica Audio ALA. Spento: si tiene la trascrizione fatta durante il canto.">
             <input id="refine" type="checkbox" />
             <span>Rifinisci allo Stop</span>
           </label>
@@ -70,6 +62,11 @@
           </label>
           <span id="output-badge" class="badge">Synth muto</span>
           <p id="feedback-reason" class="hint"></p>
+          <label class="switch"
+            title="Registrando una nuova voce, le voci già scritte suonano insieme al metronomo, così resti a tempo. Solo con le cuffie: dagli altoparlanti finirebbero nel microfono e verrebbero trascritte.">
+            <input id="accompany" type="checkbox" />
+            <span>Ascolta le altre voci mentre canti (solo con cuffie)</span>
+          </label>
         </div>
       </section>
 
@@ -152,6 +149,9 @@
             <button id="new-score" class="btn-secondary" type="button" title="Nuovo spartito (annullabile con Ctrl+Z)">Nuovo</button>
             <button id="open-score" class="btn-secondary" type="button">Apri…</button>
             <input id="open-file" type="file" accept=".json,application/json" hidden />
+            <button id="load-audio" class="btn-secondary" type="button"
+              title="Trascrive una o più registrazioni già fatte (WAV, MP3, M4A, OGG, FLAC, WebM…). Più file insieme: una voce per file, allineate dall'inizio. I file vengono letti solo nel browser.">Carica Audio ALA</button>
+            <input id="load-audio-file" type="file" multiple hidden />
             <button id="save-score" class="btn-secondary" type="button"
               title="Salva lo spartito modificabile (.vocascore.json), da riaprire con Apri…">Salva</button>
             <button id="export-musicxml" class="btn-secondary" type="button"
@@ -160,6 +160,12 @@
               title="Crea un PDF con titolo e pentagrammi">PDF</button>
           </div>
         </div>
+
+        <fieldset class="voices">
+          <legend>Voci</legend>
+          <div id="voice-list" class="voice-list"></div>
+          <button id="add-voice" class="btn-secondary btn-small" type="button">+ Aggiungi voce</button>
+        </fieldset>
 
         <div class="score-settings">
           <label class="switch">

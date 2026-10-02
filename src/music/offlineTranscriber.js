@@ -1,5 +1,6 @@
 import { detectPitchMPM } from '../audio/pitchDetector.js';
 import { computeRms, rmsToDb } from '../audio/noiseGate.js';
+import { lowpass } from '../audio/lowpass.js';
 import { hzToMidi } from './noteUtils.js';
 import { circularMeanOffset } from './tuning.js';
 import { median, vibratoCenter } from './pitchCenter.js';
@@ -23,7 +24,8 @@ import { median, vibratoCenter } from './pitchCenter.js';
  *   6. Sillabe ripetute sulla stessa nota: cali di volume con risalita su ENTRAMBI i lati.
  *   7. Altezza di ogni nota: mediana della parte stabile (senza attacco e coda), corretta per
  *      l'intonazione di chi canta.
- *   8. Pulizia: note troppo brevi assorbite dalla vicina o scartate se isolate.
+ *   8. Pulizia: note troppo brevi assorbite dalla vicina o scartate se isolate; entrate "da fuori"
+ *      (la voce attacca sopra o sotto la nota e la raggiunge dopo 100–200 ms) assorbite nella nota.
  */
 
 export const OFFLINE_DEFAULTS = Object.freeze({
@@ -33,6 +35,7 @@ export const OFFLINE_DEFAULTS = Object.freeze({
   maxHz: 1100,
   peakThreshold: 0.9,
   minClarity: 0.75,
+  lowpassHz: 2500, // passa-basso prima di MPM, come dal vivo (vedi audio/lowpass.js)
   gateAboveFloorDb: 10,
   minGateDb: -65,
   maxGateDb: -35,
@@ -43,6 +46,9 @@ export const OFFLINE_DEFAULTS = Object.freeze({
   dipDb: 6,
   maxDipSec: 0.3,
   minNoteSec: 0.07,
+  maxGlideSec: 0.2, // entrata "da fuori" più lunga di così: è una nota vera (0 = disattivato)
+  maxGlideSemitones: 2,
+  maxGlideGapSec: 0.08, // buco con suono presente tra entrata e nota (la scivolata abbassa la chiarezza)
   maxTuningOffset: 0.4, // oltre ±40 cents lo scarto è ambiguo di un semitono (vedi tuning.js)
   tuning: true,
 });
@@ -50,15 +56,19 @@ export const OFFLINE_DEFAULTS = Object.freeze({
 /**
  * @param {Float32Array} samples audio mono
  * @param {number} sampleRate
- * @param {Partial<typeof OFFLINE_DEFAULTS>} [options]
+ * @param {Partial<typeof OFFLINE_DEFAULTS> & { floorCapDb?:number }} [options]
+ *   Il rumore di fondo è il 10° percentile dei frame di QUESTO audio: va bene per una registrazione
+ *   intera, non per un pezzo breve tutto cantato (dal vivo, vedi liveTranscriber.js), dove il percentile
+ *   cadrebbe sul canto e la soglia di silenzio sarebbe troppo alta. floorCapDb (dBFS) è il fondo già
+ *   misurato in precedenza: quello stimato qui non può superarlo.
  * @param {(fraction:number) => void} [onProgress]
- * @returns {{ notes: Array<{ midi:number, start:number, end:number, transition:boolean }>, tuningOffset:number }}
- *   tempi in secondi dall'inizio della registrazione
+ * @returns {{ notes: Array<{ midi:number, start:number, end:number, transition:boolean }>, tuningOffset:number,
+ *             floorDb:number|null }} tempi in secondi dall'inizio dell'audio; floorDb = rumore di fondo usato
  */
 export function transcribeOffline(samples, sampleRate, options = {}, onProgress = null) {
   const o = { ...OFFLINE_DEFAULTS, ...options };
-  const frames = analyzeFrames(samples, sampleRate, o, onProgress);
-  if (frames.length === 0) return { notes: [], tuningOffset: 0 };
+  const { frames, floorDb } = analyzeFrames(samples, sampleRate, o, onProgress);
+  if (frames.length === 0) return { notes: [], tuningOffset: 0, floorDb };
 
   smoothPitch(frames);
   // Intonazione in due passate: prima una segmentazione senza correzione, per trovare le note e il
@@ -68,7 +78,7 @@ export function transcribeOffline(samples, sampleRate, options = {}, onProgress 
   let notes = toSegments(labels.states, labels.lo, frames);
   notes = splitSyllables(notes, frames, o);
   refinePitch(notes, frames, tuningOffset);
-  notes = cleanUp(notes, o);
+  notes = cleanUp(notes, frames, o);
 
   const half = o.hopSec / 2;
   const out = notes.map((n) => ({
@@ -86,6 +96,7 @@ export function transcribeOffline(samples, sampleRate, options = {}, onProgress 
       transition: Boolean(out[i + 1] && out[i + 1].start - n.end < 0.03 && !out[i + 1].syllable),
     })),
     tuningOffset,
+    floorDb,
   };
 }
 
@@ -97,20 +108,23 @@ function analyzeFrames(samples, sr, o, onProgress) {
   for (let s = 0; s + win <= samples.length; s += hop) {
     frames.push({ t: (s + win / 2) / sr, s, db: rmsToDb(computeRms(samples.subarray(s, s + win))) });
   }
-  if (frames.length === 0) return frames;
+  if (frames.length === 0) return { frames, floorDb: o.floorCapDb ?? null };
 
   const dbs = frames.map((f) => f.db).filter(Number.isFinite).sort((a, b) => a - b);
-  const floor = dbs.length ? dbs[Math.floor(dbs.length * 0.1)] : -100;
+  let floor = dbs.length ? dbs[Math.floor(dbs.length * 0.1)] : -100;
+  if (Number.isFinite(o.floorCapDb)) floor = Math.min(floor, o.floorCapDb);
   const gate = Math.min(o.maxGateDb, Math.max(o.minGateDb, floor + o.gateAboveFloorDb));
 
   // Il pitch si calcola solo dove c'è suono: nei silenzi si risparmia la parte costosa.
+  // MPM lavora sul segnale filtrato; il volume (db) resta quello del segnale intero.
   const pitchOptions = { minHz: o.minHz, maxHz: o.maxHz, peakThreshold: o.peakThreshold };
+  const voiceBand = lowpass(samples, sr, o.lowpassHz);
   frames.forEach((f, i) => {
     f.active = f.db >= gate - 4; // c'è suono (anche non intonato: consonanti, respiro)
     f.m = NaN;
     f.clarity = 0;
     if (f.db >= gate) {
-      const r = detectPitchMPM(samples.subarray(f.s, f.s + win), sr, pitchOptions);
+      const r = detectPitchMPM(voiceBand.subarray(f.s, f.s + win), sr, pitchOptions);
       if (r && r.clarity >= o.minClarity) {
         f.m = hzToMidi(r.hz);
         f.clarity = r.clarity;
@@ -118,7 +132,7 @@ function analyzeFrames(samples, sr, o, onProgress) {
     }
     if (onProgress && i % 500 === 0) onProgress(i / frames.length);
   });
-  return frames;
+  return { frames, floorDb: floor };
 }
 
 // ── 3. Pitch: errori d'ottava e mediana centrata ───────────────────────────
@@ -352,7 +366,7 @@ function refinePitch(notes, frames, offset) {
 }
 
 // ── 8. Pulizia ─────────────────────────────────────────────────────────────
-function cleanUp(notes, o) {
+function cleanUp(notes, frames, o) {
   const minFrames = Math.ceil(o.minNoteSec / o.hopSec);
   const list = notes.map((n) => ({ ...n }));
   const adjacent = (a, b) => a && b && b.i0 - a.i1 <= 3;
@@ -384,6 +398,8 @@ function cleanUp(notes, o) {
     }
   }
 
+  absorbOnsetGlides(list, frames, o);
+
   // Note consecutive con la stessa altezza e senza una nuova sillaba in mezzo: una sola nota.
   const merged = [];
   for (const n of list) {
@@ -392,4 +408,46 @@ function cleanUp(notes, o) {
     else merged.push(n);
   }
   return merged;
+}
+
+/**
+ * Entrata "da fuori": la voce reale spesso attacca una nota sopra o sotto (fino a 1–2 semitoni) e la
+ * raggiunge dopo 100–200 ms, senza stacco. Misurato su una registrazione vera: "mi" attaccato un
+ * semitono sopra per 160 ms, "re" partito due semitoni sotto per 150 ms. Più lunghe della soglia delle
+ * note brevi (minNoteSec), diventerebbero note in più e romperebbero il ritmo (D#3 0.25 | D3 0.75).
+ *
+ * Una nota è un'entrata, e viene assorbita nella successiva (che ne prende l'attacco), se:
+ *   - è breve (≤ maxGlideSec) e la successiva dura almeno una volta e mezza tanto, a ≤ maxGlideSemitones
+ *     (sulla voce vera l'entrata può essere lunga quasi metà della nota: "mi" 160 ms + 330 ms);
+ *   - APRE un gruppo: prima c'è silenzio o una consonante (≥ 3 frame senza altezza), o è una nuova
+ *     sillaba. Una nota breve dentro una frase legata è invece una nota di passaggio vera e resta;
+ *   - arriva alla successiva senza stacco: niente nuova sillaba, e il buco tra le due (≤ maxGlideGapSec)
+ *     ha suono presente. Durante una scivolata veloce l'altezza cambia dentro la finestra di analisi,
+ *     la chiarezza crolla e quei frame risultano "senza altezza" anche se la voce non si interrompe.
+ *
+ * Limite noto: una nota breve cantata davvero all'inizio di un gruppo e legata alla successiva sulla
+ * stessa sillaba (un melisma) viene assorbita. Con maxGlideSec = 0 la regola è disattivata.
+ */
+function absorbOnsetGlides(list, frames, o) {
+  const maxFrames = Math.round(o.maxGlideSec / o.hopSec);
+  const maxGap = Math.round(o.maxGlideGapSec / o.hopSec);
+  const len = (n) => n.i1 - n.i0 + 1;
+  const soundBetween = (a, b) => {
+    if (b.i0 - a.i1 - 1 > maxGap) return false;
+    for (let k = a.i1 + 1; k < b.i0; k++) if (!frames[k].active) return false;
+    return true;
+  };
+  for (let i = 0; i < list.length - 1; i++) {
+    const n = list[i];
+    const next = list[i + 1];
+    const prev = list[i - 1];
+    if (len(n) > maxFrames || len(next) < 1.5 * len(n) || next.syllable) continue;
+    if (Math.abs(next.midi - n.midi) > o.maxGlideSemitones) continue;
+    const opensGroup = !prev || n.syllable || n.i0 - prev.i1 - 1 >= 3;
+    if (!opensGroup || !soundBetween(n, next)) continue;
+    next.i0 = n.i0;
+    next.syllable = n.syllable;
+    list.splice(i, 1);
+    i--;
+  }
 }

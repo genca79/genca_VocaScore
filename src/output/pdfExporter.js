@@ -38,7 +38,7 @@ export async function exportPdf(doc) {
 
   // Righi disegnati su canvas, con la stessa impaginazione della vista a schermo ma a larghezza A4.
   const host = document.createElement('div');
-  new ScoreRenderer(host, { backend: 'canvas', pixelRatio: PIXEL_RATIO }).render(doc, { width: LAYOUT_WIDTH_PX });
+  new ScoreRenderer(host, { backend: 'canvas', pixelRatio: PIXEL_RATIO }).render(doc, { width: LAYOUT_WIDTH_PX, print: true });
   const systems = [...host.querySelectorAll('canvas')];
 
   const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });

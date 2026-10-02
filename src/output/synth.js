@@ -2,16 +2,20 @@ import * as Tone from 'tone';
 import { DEFAULT_INSTRUMENT, INSTRUMENTS } from './instruments.js';
 
 /**
- * Motore sonoro: due voci (live e riascolto) che condividono strumento ed effetti.
+ * Motore sonoro: la voce live e le voci del riascolto condividono gli effetti.
  *
- *   voce live      → liveBus (mute anti-Larsen) ┐
- *                                                ├→ master (volume) → filtro (brillantezza) → riverbero → limiter → uscita
- *   voce riascolto → playBus ───────────────────┘
+ *   voce live                → liveBus (mute anti-Larsen) ┐
+ *                                                          ├→ master (volume) → filtro → riverbero → limiter → uscita
+ *   voci del riascolto (1/voce della partitura) → playBus ┘
  *
- * Perché due voci separate:
+ * Perché bus separati:
  *   - la voce live viene silenziata dal FeedbackGuard quando non ci sono cuffie;
- *   - il riascolto avviene a microfono spento, quindi non può innescare il Larsen e deve
- *     sentirsi anche dagli altoparlanti.
+ *   - il riascolto avviene a microfono spento (o, registrando una nuova voce, in cuffia), quindi
+ *     deve sentirsi anche dagli altoparlanti.
+ *
+ * Polifonia: gli strumenti sono monofonici (instruments.js), quindi nel riascolto ogni voce della
+ * partitura ha la SUA istanza dello strumento, creata all'avvio e liberata alla fine. Come in un coro:
+ * ogni voce canta una nota alla volta, tutte insieme fanno gli accordi.
  */
 
 /** Brillantezza [0, 1] → frequenza di taglio del filtro, su scala esponenziale (400 Hz – 18 kHz). */
@@ -39,31 +43,31 @@ export class SynthEngine {
     this.octave = octave;
     this.liveMidi = null; // nota live che sta suonando
     this.part = null;
+    /** @type {Map<string, any>} istanze dello strumento del riascolto, una per voce della partitura */
+    this.playVoices = new Map();
     this.playToken = 0;
     /** Notificato a ogni avvio/fine del riascolto (fine naturale, Stop o sostituzione). */
     this.onPlaybackChange = null;
-    /** Notificato con l'id della nota che inizia a suonare nel riascolto (null alla fine). */
+    /** Notificato con (id della nota, id della voce) quando una nota inizia a suonare; (null, null) alla fine. */
     this.onPlaybackNote = null;
     this.setInstrument(instrument);
   }
 
   // ── Impostazioni del suono ─────────────────────────────────────────────
 
+  /**
+   * Strumento generale: voce live e voci della partitura senza uno strumento proprio.
+   * Un riascolto in corso prosegue con gli strumenti con cui è partito.
+   */
   setInstrument(id) {
     const preset = INSTRUMENTS[id] ?? INSTRUMENTS[DEFAULT_INSTRUMENT];
     const wasLive = this.liveMidi;
-    // Il riascolto in corso NON si ferma: il Part legge this.playVoice a ogni nota,
-    // quindi le note successive useranno il nuovo strumento.
     this.liveVoice?.dispose();
-    this.playVoice?.dispose();
 
     this.instrumentId = INSTRUMENTS[id] ? id : DEFAULT_INSTRUMENT;
     this.liveVoice = preset.create().connect(this.liveBus);
     this.liveVoice.volume.value = preset.gainDb;
     this.liveVoice.portamento = this.portamento; // glide nel legato dal vivo
-    this.playVoice = preset.create().connect(this.playBus);
-    this.playVoice.volume.value = preset.gainDb;
-    this.playVoice.portamento = 0; // nel riascolto note pulite, come sono scritte
 
     // Se si cambia strumento mentre si canta, la nota corrente prosegue col nuovo timbro.
     this.liveMidi = null;
@@ -96,14 +100,15 @@ export class SynthEngine {
    *   - noteOn con la voce attiva → setNote (cambio di frequenza legato, con glide)
    */
   liveNoteOn(midi) {
-    if (this.liveMidi !== null) this.liveVoice.setNote(this.#freq(midi));
-    else this.liveVoice.triggerAttack(this.#freq(midi));
+    // Tone.immediate(): subito, anche mentre il riascolto (altre voci, registrando) usa il lookAhead.
+    if (this.liveMidi !== null) this.liveVoice.setNote(this.#freq(midi), Tone.immediate());
+    else this.liveVoice.triggerAttack(this.#freq(midi), Tone.immediate());
     this.liveMidi = midi;
   }
 
   liveNoteOff() {
     if (this.liveMidi === null) return;
-    this.liveVoice.triggerRelease();
+    this.liveVoice.triggerRelease(Tone.immediate());
     this.liveMidi = null;
   }
 
@@ -119,10 +124,15 @@ export class SynthEngine {
   }
 
   /**
-   * Suona una sequenza di note sul Transport di Tone (scheduling a tempo di campione, senza jitter).
-   * @param {Array<{ id?:string, time:number, duration:number, midi:number }>} events tempi in secondi
+   * Suona le note (di una o più voci, in polifonia) sul Transport di Tone: scheduling a tempo di
+   * campione, senza jitter.
+   * @param {Array<{ id?:string, voiceId?:string, instrument?:string|null, time:number, duration:number, midi:number }>} events
+   *   tempi in secondi; le note con lo stesso voiceId suonano sulla stessa istanza (monofonica);
+   *   instrument null/assente = strumento generale
+   * @param {{ at?:number|null }} [options] at: istante dell'orologio audio (s) in cui far partire il
+   *   tempo 0, es. il primo movimento dopo la battuta d'attacco del metronomo; default: subito
    */
-  play(events) {
+  play(events, { at = null } = {}) {
     this.stopPlayback();
     if (events.length === 0) return;
 
@@ -130,26 +140,39 @@ export class SynthEngine {
     // si torna a programmare gli eventi in anticipo: timing preciso anche se il thread è occupato.
     Tone.getContext().lookAhead = 0.1;
 
+    // Un'istanza dello strumento per voce. Il volume complessivo scende con il numero di voci
+    // (a potenza costante), così un coro di 4 voci non suona 4 volte più forte di una.
+    const voiceIds = [...new Set(events.map((ev) => ev.voiceId ?? ''))];
+    for (const voiceId of voiceIds) {
+      const instrument = events.find((ev) => (ev.voiceId ?? '') === voiceId).instrument;
+      const preset = INSTRUMENTS[instrument] ?? INSTRUMENTS[this.instrumentId];
+      const synth = preset.create().connect(this.playBus);
+      synth.volume.value = preset.gainDb;
+      synth.portamento = 0; // nel riascolto note pulite, come sono scritte
+      this.playVoices.set(voiceId, synth);
+    }
+    this.playBus.volume.value = -10 * Math.log10(voiceIds.length);
+
     const token = ++this.playToken;
     const transport = Tone.getTransport();
     // Staccato leggero (92%): due note uguali consecutive si sentono separate.
     this.part = new Tone.Part((time, ev) => {
-      this.playVoice.triggerAttackRelease(this.#freq(ev.midi), ev.duration * 0.92, time);
+      this.playVoices.get(ev.voiceId ?? '')?.triggerAttackRelease(this.#freq(ev.midi), ev.duration * 0.92, time);
       // Draw esegue il callback quando la nota viene davvero sentita (non quando viene programmata).
       Tone.getDraw().schedule(() => {
-        if (token === this.playToken) this.onPlaybackNote?.(ev.id ?? null);
+        if (token === this.playToken) this.onPlaybackNote?.(ev.id ?? null, ev.voiceId ?? null);
       }, time);
     }, events.map((ev) => [ev.time, ev])).start(0);
 
-    const last = events.at(-1);
+    const end = Math.max(...events.map((ev) => ev.time + ev.duration));
     transport.scheduleOnce((time) => {
       // Draw allinea il callback al momento in cui l'audio viene davvero sentito.
       Tone.getDraw().schedule(() => {
         if (token === this.playToken) this.stopPlayback(); // altrimenti già fermato o sostituito
       }, time);
-    }, last.time + last.duration + 0.3);
+    }, end + 0.3);
 
-    transport.start('+0.05');
+    transport.start(at ?? '+0.05');
     this.onPlaybackChange?.(true);
   }
 
@@ -161,9 +184,13 @@ export class SynthEngine {
     const transport = Tone.getTransport();
     transport.stop();
     transport.cancel(0);
-    this.playVoice.triggerRelease();
+    // Rilascio dolce, poi le istanze vengono liberate (dopo la coda del suono).
+    const voices = [...this.playVoices.values()];
+    this.playVoices.clear();
+    for (const synth of voices) synth.triggerRelease(Tone.immediate());
+    setTimeout(() => voices.forEach((synth) => synth.dispose()), 3000);
     Tone.getContext().lookAhead = 0;
-    this.onPlaybackNote?.(null);
+    this.onPlaybackNote?.(null, null);
     this.onPlaybackChange?.(false);
   }
 
@@ -173,7 +200,7 @@ export class SynthEngine {
 
   dispose() {
     this.stopPlayback();
-    for (const node of [this.liveVoice, this.playVoice, this.liveBus, this.playBus, this.master, this.filter, this.reverb, this.limiter]) {
+    for (const node of [this.liveVoice, this.liveBus, this.playBus, this.master, this.filter, this.reverb, this.limiter]) {
       node.dispose();
     }
   }
