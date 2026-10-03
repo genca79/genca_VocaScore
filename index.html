@@ -8,107 +8,182 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f2328'/%3E%3Cpath d='M20 6v14.5a4 4 0 1 1-2-3.46V10h-6V6z' fill='%23e8590c'/%3E%3C/svg%3E"
     />
-    <meta name="description" content="Dalla voce allo spartito in tempo reale, interamente nel tuo browser." />
+    <meta name="description" content="Dalla voce alla partitura in tempo reale, interamente nel tuo browser." />
   </head>
   <body>
-    <header class="app-header">
-      <h1><span class="brand-prefix">GENCA</span> Voca<span>Score</span></h1>
-      <p class="tagline">Canta: la tua voce diventa nota, suono e spartito. Tutto resta nel tuo browser.</p>
+    <!--
+      Struttura (in ordine di uso):
+        1. barra in alto: titolo, Annulla/Ripeti, Impostazioni, Aiuto;
+           azioni principali: Registra, Ascolta, tempo e misura, metronomo, Importa audio, File;
+           una sola riga di stato;
+        2. pannello di registrazione (solo mentre si registra): nota, accordatore, livello;
+        3. area di lavoro: Voci a sinistra, partitura al centro, barra di modifica della nota selezionata;
+        4. finestre: Impostazioni (opzioni usate di rado, con spiegazioni visibili) e Aiuto (tastiera).
+    -->
+    <header class="topbar">
+      <div class="topbar-row">
+        <h1 class="brand"><span class="brand-prefix">GENCA</span> Voca<span>Score</span></h1>
+        <label class="title-field">
+          <span class="title-label">Titolo</span>
+          <input id="score-title" class="score-title" type="text" maxlength="120" placeholder="Senza titolo" />
+        </label>
+        <div class="toolbar-group" id="history-toolbar" role="toolbar" aria-label="Annulla e ripeti">
+          <button type="button" class="btn" data-action="undo" data-icon="undo-2" title="Ctrl+Z">Annulla</button>
+          <button type="button" class="btn" data-action="redo" data-icon="redo-2" title="Ctrl+Y">Ripeti</button>
+        </div>
+        <button id="open-settings" type="button" class="btn" data-icon="settings">Impostazioni</button>
+        <button id="open-help" type="button" class="btn" data-icon="keyboard">Aiuto</button>
+      </div>
+
+      <div class="topbar-row actions">
+        <!-- due modi alternativi di ottenere le note: cantare o importare una registrazione -->
+        <div class="action-pair" role="group" aria-label="Crea le note">
+          <button id="mic-toggle" class="btn btn-record" type="button" data-icon="mic">Registra</button>
+          <button id="load-audio" class="btn btn-import" type="button" data-icon="upload">Importa audio</button>
+          <input id="load-audio-file" type="file" multiple hidden />
+        </div>
+        <button id="play-score" class="btn btn-play" type="button" data-icon="play" disabled>Ascolta</button>
+        <button id="loop-toggle" class="btn btn-toggle" type="button" data-icon="repeat" aria-pressed="false"
+          title="Acceso: l’ascolto ricomincia da capo (o dalla nota selezionata) finché non premi Stop">Loop</button>
+
+        <div class="tempo" role="group" aria-label="Tempo della registrazione">
+          <label class="inline-field"
+            ><span>Tempo ♩ =</span><input id="bpm" type="number" step="1" inputmode="numeric"
+          /></label>
+          <label class="inline-field"><span>Misura</span><select id="time-signature"></select></label>
+          <label class="switch"><input id="metronome" type="checkbox" /><span>Metronomo</span></label>
+        </div>
+
+        <div class="actions-end">
+          <details class="menu" id="file-menu">
+            <summary class="btn" data-icon="file">File</summary>
+            <div class="menu-list">
+              <button id="new-score" type="button" data-icon="file-plus">Nuova partitura</button>
+              <button id="open-score" type="button" data-icon="folder-open">Apri…</button>
+              <input id="open-file" type="file" accept=".json,application/json" hidden />
+              <button id="save-score" type="button" data-icon="save">Salva</button>
+              <button id="save-score-audio" type="button" data-icon="save">
+                Salva con l’audio originale<small>file molto più grande, ~8 MB al minuto per voce</small>
+              </button>
+              <button id="export-audio" type="button" data-icon="download">
+                Esporta audio (WAV)<small>il mix come lo senti con Ascolta: voci, Muto e Solo, strumenti</small>
+              </button>
+              <button id="export-pdf" type="button" data-icon="download">Esporta PDF</button>
+              <button id="export-musicxml" type="button" data-icon="download">
+                Esporta MusicXML<small>per MuseScore, Finale, Sibelius, Dorico</small>
+              </button>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <p id="status" class="status" role="status" aria-live="polite">Pronto. Premi Registra e canta.</p>
+        <div id="beat-indicator" class="beat-indicator" aria-hidden="true" hidden></div>
+        <p id="score-status" class="score-status" role="status" aria-live="polite"></p>
+      </div>
+      <p id="error" class="error" role="alert" hidden></p>
     </header>
 
-    <main class="app">
-      <section class="panel controls" aria-label="Controlli">
-        <button id="mic-toggle" class="btn-primary" type="button" aria-pressed="false">Avvia microfono</button>
-
-        <div class="rec-settings" aria-label="Impostazioni di registrazione">
-          <label class="field" title="Con il metronomo: il tempo del click. Senza metronomo: il tempo viene rilevato automaticamente dal canto allo Stop (questo valore fa da indicazione).">
-            <span>BPM</span>
-            <input id="bpm" type="number" step="1" inputmode="numeric" />
-          </label>
-          <label class="field">
-            <span>Tempo</span>
-            <select id="time-signature"></select>
-          </label>
-          <label class="field" title="Risoluzione ritmica. Auto: allo Stop, per ogni movimento si sceglie la suddivisione (intero, metà, quarti) più semplice che rispetta il canto. Durante il canto l'anteprima usa 1/8.">
-            <span>Quantizzazione</span>
-            <select id="grid"></select>
-          </label>
-          <label class="switch rec-metronome" title="Click e battuta di attacco durante la registrazione. Spento: il tempo viene rilevato automaticamente dal canto allo Stop, comprese piccole variazioni di tempo.">
-            <input id="metronome" type="checkbox" />
-            <span>Metronomo</span>
-          </label>
-          <label class="switch rec-metronome"
-            title="Allo Stop la registrazione viene rianalizzata per intero (solo nel browser), esattamente come un file caricato con Carica Audio ALA. Spento: si tiene la trascrizione fatta durante il canto.">
-            <input id="refine" type="checkbox" />
-            <span>Rifinisci allo Stop</span>
-          </label>
-          <label class="switch rec-metronome"
-            title="Una nota cantata staccata viene scritta lunga fino all'attacco della successiva, se il silenzio in mezzo è breve (fino a una croma). Disattiva per scrivere la durata esatta come cantata.">
-            <input id="legato" type="checkbox" />
-            <span>Note legate</span>
-          </label>
+    <!-- Tuner: visibile mentre si registra (microfono) e mentre si ascolta (voce attiva) -->
+    <section id="tuner-panel" class="tuner-panel" aria-labelledby="tuner-source" hidden>
+      <p id="tuner-source" class="tuner-source">Microfono</p>
+      <div class="tuner-main">
+        <div class="tuner-note">
+          <span id="note-name" class="note-name">–</span>
+          <span id="note-sci" class="note-sci"></span>
         </div>
-
-        <div class="status-row">
-          <p id="status" class="status" role="status" aria-live="polite">Microfono spento</p>
-          <div id="beat-indicator" class="beat-indicator" aria-hidden="true" hidden></div>
+        <div class="tuner-gauge">
+          <div class="tuner-track" aria-hidden="true">
+            <span class="tuner-center"></span>
+            <span id="tuner-marker" class="tuner-marker" hidden></span>
+          </div>
+          <div class="tuner-scale" aria-hidden="true">
+            <span>calante</span><span>intonato</span><span>crescente</span>
+          </div>
+          <p id="tuner-verdict" class="tuner-verdict">In attesa di una nota</p>
+          <p class="tuner-details">
+            <span id="note-hz"></span>
+            <span id="tuner-written"></span>
+          </p>
         </div>
-        <p id="error" class="error" role="alert" hidden></p>
-
-        <div class="feedback">
-          <label class="switch">
-            <input id="headphones" type="checkbox" />
-            <span>Suona synth mentre canti (solo con cuffie)</span>
-          </label>
-          <span id="output-badge" class="badge">Synth muto</span>
-          <p id="feedback-reason" class="hint"></p>
-          <label class="switch"
-            title="Registrando una nuova voce, le voci già scritte suonano insieme al metronomo, così resti a tempo. Solo con le cuffie: dagli altoparlanti finirebbero nel microfono e verrebbero trascritte.">
-            <input id="accompany" type="checkbox" />
-            <span>Ascolta le altre voci mentre canti (solo con cuffie)</span>
-          </label>
+      </div>
+      <div id="mic-level" class="meter-row">
+        <span class="meter-caption">Livello del microfono</span>
+        <span id="gate-led" class="gate-led" title="Acceso quando la voce viene ascoltata"></span>
+        <div class="meter" aria-hidden="true">
+          <div id="meter-fill" class="meter-fill"></div>
+          <div id="meter-threshold" class="meter-threshold"></div>
         </div>
-      </section>
+        <span id="meter-label" class="meter-label">Livello</span>
+      </div>
+      <p id="feedback-reason" class="hint is-warning" hidden></p>
+    </section>
 
-      <section class="panel live" aria-label="Nota rilevata">
-        <div class="note-display">
-          <div id="note-name" class="note-name">–</div>
-          <div class="note-meta">
-            <span id="note-hz">— Hz</span>
-            <span id="note-cents"></span>
+    <main class="workspace">
+      <aside class="voices-panel" aria-labelledby="voices-title">
+        <h2 id="voices-title">Voci</h2>
+        <div id="voice-list" class="voice-list"></div>
+        <button id="add-voice" class="btn btn-small" type="button" data-icon="plus">Aggiungi voce</button>
+      </aside>
+
+      <section class="score-area" aria-label="Partitura">
+        <div id="edit-toolbar" class="edit-toolbar" role="toolbar" aria-label="Modifica della nota selezionata">
+          <p id="selection-info" class="selection-info"></p>
+          <div class="tool-group" role="group" aria-label="Altezza">
+            <button type="button" data-action="transpose" data-value="1" data-needs-selection data-icon="chevron-up" title="Freccia su">Semitono su</button>
+            <button type="button" data-action="transpose" data-value="-1" data-needs-selection data-icon="chevron-down" title="Freccia giù">Semitono giù</button>
+            <button type="button" data-action="transpose" data-value="12" data-needs-selection data-icon="chevrons-up" title="Shift + freccia su">Ottava su</button>
+            <button type="button" data-action="transpose" data-value="-12" data-needs-selection data-icon="chevrons-down" title="Shift + freccia giù">Ottava giù</button>
+          </div>
+          <div class="tool-group" role="group" aria-label="Durata">
+            <button type="button" data-action="figure" data-value="0.25" data-needs-selection title="Tasto 1"><span class="figure" aria-hidden="true">&#xE1D9;</span>Semicroma</button>
+            <button type="button" data-action="figure" data-value="0.5" data-needs-selection title="Tasto 2"><span class="figure" aria-hidden="true">&#xE1D7;</span>Croma</button>
+            <button type="button" data-action="figure" data-value="1" data-needs-selection title="Tasto 3"><span class="figure" aria-hidden="true">&#xE1D5;</span>Semiminima</button>
+            <button type="button" data-action="figure" data-value="2" data-needs-selection title="Tasto 4"><span class="figure" aria-hidden="true">&#xE1D3;</span>Minima</button>
+            <button type="button" data-action="figure" data-value="4" data-needs-selection title="Tasto 5"><span class="figure" aria-hidden="true">&#xE1D2;</span>Semibreve</button>
+            <button type="button" data-action="dot" data-needs-selection title="Tasto punto">Punto</button>
+          </div>
+          <div class="tool-group" role="group" aria-label="Nota">
+            <button type="button" data-action="rest" data-needs-selection title="Tasto R">Trasforma in pausa</button>
+            <button type="button" data-action="duplicate" data-needs-selection data-icon="copy" title="Tasto D">Duplica</button>
+            <button type="button" data-action="delete" data-needs-selection data-icon="trash-2" title="Tasto Canc">Elimina</button>
           </div>
         </div>
-
-        <div class="tuner" aria-hidden="true">
-          <div class="tuner-scale"><span>−50</span><span>0</span><span>+50</span></div>
-          <div id="tuner-needle" class="tuner-needle"></div>
-        </div>
-
-        <div class="meter-row">
-          <span id="gate-led" class="gate-led" title="Noise gate"></span>
-          <div class="meter" aria-hidden="true">
-            <div id="meter-fill" class="meter-fill"></div>
-            <div id="meter-threshold" class="meter-threshold" title="Soglia del noise gate"></div>
-          </div>
-          <span id="meter-label" class="meter-label" title="Livello attuale / soglia del gate">Livello</span>
-        </div>
-        <p id="tuning-info" class="tuning-info"
-          title="Scarto medio dell'intonazione di chi canta rispetto a La = 440 Hz: viene compensato nella trascrizione">
-          Intonazione: in attesa di qualche nota
-        </p>
+        <div id="score" class="score"></div>
       </section>
+    </main>
 
-      <section class="panel sound-panel" aria-label="Suono Synth">
-        <div class="panel-header">
-          <h2>Suono Synth</h2>
-          <button id="preview-sound" class="btn-secondary btn-small" type="button">Prova suono</button>
-        </div>
+    <footer class="app-footer">Nessun audio lascia il tuo dispositivo: elaborazione 100% locale.</footer>
+
+    <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title">
+      <div class="dialog-head">
+        <h2 id="settings-title">Impostazioni</h2>
+        <button type="button" class="btn" data-close>Chiudi</button>
+      </div>
+
+      <fieldset class="settings-group">
+        <legend>Ritmo</legend>
+        <label class="inline-field"><span>Precisione del ritmo</span><select id="grid"></select></label>
+        <p class="help">Automatica: per ogni movimento sceglie la suddivisione più semplice che rispetta il canto.</p>
+        <label class="switch"><input id="legato" type="checkbox" /><span>Note legate</span></label>
+        <p class="help">Una nota cantata staccata viene scritta lunga fino all’attacco della successiva, se il silenzio in mezzo è breve.</p>
+      </fieldset>
+
+      <fieldset class="settings-group">
+        <legend>Registrazione</legend>
+        <label class="switch"><input id="refine" type="checkbox" /><span>Analisi finale più precisa</span></label>
+        <p class="help">Allo Stop la registrazione viene rianalizzata per intero, come un file importato.</p>
+        <label class="switch"><input id="headphones" type="checkbox" /><span>Suona il synth mentre canti (solo con le cuffie)</span></label>
+        <label class="switch"><input id="accompany" type="checkbox" /><span>Ascolta le altre voci mentre canti (solo con le cuffie)</span></label>
+        <p class="help">Con gli altoparlanti questi suoni finirebbero nel microfono e verrebbero trascritti.</p>
+      </fieldset>
+
+      <fieldset class="settings-group">
+        <legend>Suono del synth</legend>
         <div class="sound-grid">
-          <label class="field">
-            <span>Strumento</span>
-            <select id="instrument"></select>
-          </label>
-          <label class="field">
+          <label class="inline-field"><span>Strumento</span><select id="instrument"></select></label>
+          <label class="inline-field">
             <span>Ottava</span>
             <select id="octave">
               <option value="-2">−2</option>
@@ -118,101 +193,45 @@
               <option value="2">+2</option>
             </select>
           </label>
-          <label class="field field-slider">
-            <span>Brillantezza</span>
-            <input id="brightness" type="range" min="0" max="1" step="0.01" />
-          </label>
-          <label class="field field-slider">
-            <span>Riverbero</span>
-            <input id="reverb" type="range" min="0" max="1" step="0.01" />
-          </label>
-          <label class="field field-slider">
-            <span>Volume</span>
-            <input id="volume" type="range" min="-40" max="0" step="1" />
-          </label>
+          <label class="inline-field"><span>Brillantezza</span><input id="brightness" type="range" min="0" max="1" step="0.01" /></label>
+          <label class="inline-field"><span>Riverbero</span><input id="reverb" type="range" min="0" max="1" step="0.01" /></label>
+          <label class="inline-field"><span>Volume</span><input id="volume" type="range" min="-40" max="0" step="1" /></label>
         </div>
-      </section>
+        <p class="help">Strumento usato dalle voci senza uno strumento proprio (vedi "Opzioni" nelle Voci).</p>
+        <button id="preview-sound" class="btn btn-small" type="button" data-icon="play">Prova suono</button>
+      </fieldset>
 
-      <section class="panel score-panel" aria-label="Spartito">
-        <div class="panel-header">
-          <input
-            id="score-title"
-            class="score-title"
-            type="text"
-            maxlength="120"
-            placeholder="Titolo dello spartito"
-            aria-label="Titolo dello spartito"
-          />
-          <div class="panel-actions">
-            <button id="play-score" class="btn-secondary btn-play" type="button" disabled
-              title="Riascolta lo spartito (dalla nota selezionata, se c'è)">▶ Riascolta</button>
-            <button id="new-score" class="btn-secondary" type="button" title="Nuovo spartito (annullabile con Ctrl+Z)">Nuovo</button>
-            <button id="open-score" class="btn-secondary" type="button">Apri…</button>
-            <input id="open-file" type="file" accept=".json,application/json" hidden />
-            <button id="load-audio" class="btn-secondary" type="button"
-              title="Trascrive una o più registrazioni già fatte (WAV, MP3, M4A, OGG, FLAC, WebM…). Più file insieme: una voce per file, allineate dall'inizio. I file vengono letti solo nel browser.">Carica Audio ALA</button>
-            <input id="load-audio-file" type="file" multiple hidden />
-            <button id="save-score" class="btn-secondary" type="button"
-              title="Salva lo spartito modificabile (.vocascore.json), da riaprire con Apri…">Salva</button>
-            <button id="export-musicxml" class="btn-secondary" type="button"
-              title="Esporta in MusicXML per MuseScore, Finale, Sibelius, Dorico…">MusicXML</button>
-            <button id="export-pdf" class="btn-secondary" type="button"
-              title="Crea un PDF con titolo e pentagrammi">PDF</button>
-          </div>
-        </div>
+      <fieldset class="settings-group">
+        <legend>Vista</legend>
+        <label class="switch"><input id="note-names" type="checkbox" /><span>Nomi delle note sotto il pentagramma</span></label>
+      </fieldset>
+    </dialog>
 
-        <fieldset class="voices">
-          <legend>Voci</legend>
-          <div id="voice-list" class="voice-list"></div>
-          <button id="add-voice" class="btn-secondary btn-small" type="button">+ Aggiungi voce</button>
-        </fieldset>
-
-        <div class="score-settings">
-          <label class="switch">
-            <input id="note-names" type="checkbox" />
-            <span>Nomi delle note</span>
-          </label>
-        </div>
-
-        <div id="edit-toolbar" class="edit-toolbar" role="toolbar" aria-label="Modifica dello spartito">
-          <div class="tool-group">
-            <button type="button" data-action="undo" title="Annulla (Ctrl+Z)">↶ Annulla</button>
-            <button type="button" data-action="redo" title="Ripeti (Ctrl+Y)">↷ Ripeti</button>
-          </div>
-          <div class="tool-group" aria-label="Altezza">
-            <button type="button" data-action="transpose" data-value="1" data-needs-selection title="Su di un semitono (↑)">▲ ½</button>
-            <button type="button" data-action="transpose" data-value="-1" data-needs-selection title="Giù di un semitono (↓)">▼ ½</button>
-            <button type="button" data-action="transpose" data-value="12" data-needs-selection title="Su di un'ottava (Shift+↑)">▲ 8va</button>
-            <button type="button" data-action="transpose" data-value="-12" data-needs-selection title="Giù di un'ottava (Shift+↓)">▼ 8va</button>
-          </div>
-          <div class="tool-group" aria-label="Durata">
-            <button type="button" data-action="figure" data-value="0.25" data-needs-selection title="Semicroma (1)">1/16</button>
-            <button type="button" data-action="figure" data-value="0.5" data-needs-selection title="Croma (2)">1/8</button>
-            <button type="button" data-action="figure" data-value="1" data-needs-selection title="Semiminima (3)">1/4</button>
-            <button type="button" data-action="figure" data-value="2" data-needs-selection title="Minima (4)">1/2</button>
-            <button type="button" data-action="figure" data-value="4" data-needs-selection title="Semibreve (5)">1</button>
-            <button type="button" data-action="dot" data-needs-selection title="Punto di valore (.)">Punto</button>
-          </div>
-          <div class="tool-group">
-            <button type="button" data-action="rest" data-needs-selection title="Trasforma in pausa / in nota (R)">Nota → pausa</button>
-            <button type="button" data-action="duplicate" data-needs-selection title="Duplica (D)">Duplica</button>
-            <button type="button" data-action="delete" data-needs-selection title="Elimina (Canc)">Elimina</button>
-          </div>
-        </div>
-        <p class="selection-row">
-          <span id="selection-info" class="selection-info"></span>
-          <span id="score-status" class="score-status" role="status" aria-live="polite"></span>
-        </p>
-
-        <div id="score" class="score"></div>
-        <p class="hint shortcuts">
-          Tastiera: ← → seleziona · ↑ ↓ semitono · Shift+↑ ↓ ottava · 1–5 durata · . punto · R nota/pausa ·
-          D duplica · Canc elimina · Esc deseleziona · Ctrl+Z / Ctrl+Y annulla/ripeti
-        </p>
-      </section>
-    </main>
-
-    <footer class="app-footer">Nessun audio lascia il tuo dispositivo: elaborazione 100% locale.</footer>
+    <dialog id="help-dialog" class="dialog" aria-labelledby="help-title">
+      <div class="dialog-head">
+        <h2 id="help-title">Aiuto</h2>
+        <button type="button" class="btn" data-close>Chiudi</button>
+      </div>
+      <ol class="help-steps">
+        <li>Premi <strong>Registra</strong> e canta: le note compaiono sulla partitura.</li>
+        <li>Premi <strong>Stop</strong>: la registrazione entra nella voce attiva.</li>
+        <li>Clicca una nota per modificarla; premi <strong>Ascolta</strong> per sentire il risultato.</li>
+      </ol>
+      <h3>Tastiera</h3>
+      <table class="shortcuts">
+        <tbody>
+          <tr><th scope="row">← →</th><td>nota precedente / successiva</td></tr>
+          <tr><th scope="row">↑ ↓</th><td>un semitono su / giù (con Shift: un’ottava)</td></tr>
+          <tr><th scope="row">1 2 3 4 5</th><td>semicroma, croma, semiminima, minima, semibreve</td></tr>
+          <tr><th scope="row">.</th><td>punto di valore</td></tr>
+          <tr><th scope="row">R</th><td>nota ↔ pausa</td></tr>
+          <tr><th scope="row">D</th><td>duplica</td></tr>
+          <tr><th scope="row">Canc</th><td>elimina</td></tr>
+          <tr><th scope="row">Esc</th><td>deseleziona</td></tr>
+          <tr><th scope="row">Ctrl+Z / Ctrl+Y</th><td>annulla / ripeti</td></tr>
+        </tbody>
+      </table>
+    </dialog>
 
     <script type="module" src="/src/main.js"></script>
   </body>

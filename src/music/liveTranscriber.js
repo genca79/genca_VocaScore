@@ -1,5 +1,5 @@
 /**
- * Trascrizione DAL VIVO con lo stesso algoritmo della rifinitura e di "Carica Audio ALA"
+ * Trascrizione DAL VIVO con lo stesso algoritmo della rifinitura e di "Importa audio"
  * (offlineTranscriber.js), applicato all'audio della sessione mentre si canta.
  *
  * A ogni giro (~0,5 s) si rianalizza l'audio dagli ultimi `contextSec` secondi fino all'ultimo campione

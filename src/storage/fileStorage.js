@@ -8,9 +8,10 @@ const DRAFT_KEY = 'vocascore.draft';
 
 /** Tipi di file esportabili: descrizione per la finestra "Salva con nome", MIME ed estensione. */
 export const FILE_TYPES = {
-  vocascore: { description: 'Spartito GENCA VocaScore', mime: 'application/json', extension: '.vocascore.json' },
+  vocascore: { description: 'Partitura GENCA VocaScore', mime: 'application/json', extension: '.vocascore.json' },
   musicxml: { description: 'MusicXML', mime: 'application/vnd.recordare.musicxml+xml', extension: '.musicxml' },
   pdf: { description: 'Documento PDF', mime: 'application/pdf', extension: '.pdf' },
+  wav: { description: 'Audio WAV', mime: 'audio/wav', extension: '.wav' },
 };
 
 /** "La mia canzone!" → "la-mia-canzone" (nome file sicuro). */
@@ -22,7 +23,7 @@ export function slugify(title) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
-  return slug || 'spartito';
+  return slug || 'partitura';
 }
 
 /**

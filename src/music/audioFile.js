@@ -1,5 +1,7 @@
+import { toPcm16 } from '../storage/pcm.js';
+
 /**
- * "Carica Audio ALA": trascrizione di una registrazione già esistente (file audio scelto dall'utente).
+ * "Importa audio": trascrizione di una registrazione già esistente (file audio scelto dall'utente).
  *
  * Il file viene letto e decodificato SOLO nel browser (nessun upload), poi passa dalla stessa
  * trascrizione della registrazione dal microfono (offlineTranscriber.js, in un Web Worker) e dallo
@@ -26,36 +28,50 @@ export class AudioFileError extends Error {
   }
 }
 
+/** Frequenza della voce originale conservata per il riascolto (qualità piena). */
+export const ORIGINAL_SAMPLE_RATE = 48000;
+
 /**
- * Decodifica un file audio in un segnale mono alla frequenza di analisi.
+ * Decodifica un file audio in mono, due volte:
+ *   - alla frequenza di analisi (16 kHz, float) per la trascrizione;
+ *   - a 48 kHz in PCM 16 bit: la voce originale per il riascolto.
  *
- * Si usa un OfflineAudioContext alla frequenza di analisi: decodeAudioData ricampiona già al suo
+ * Si usa un OfflineAudioContext alla frequenza voluta: decodeAudioData ricampiona già al suo
  * sampleRate con il resampler del browser (filtrato, niente aliasing), e non serve sbloccare l'audio
  * con un gesto dell'utente perché non si suona nulla.
  *
  * @param {Blob} file
  * @param {{ sampleRate?:number, maxMinutes?:number }} [options]
- * @returns {Promise<{ samples:Float32Array, sampleRate:number, durationSec:number }>}
+ * @returns {Promise<{ samples:Float32Array, sampleRate:number, durationSec:number,
+ *                     original:{ samples:Int16Array, sampleRate:number } }>}
  */
 export async function decodeAudioFile(file, { sampleRate = ANALYSIS_SAMPLE_RATE, maxMinutes = 10 } = {}) {
   const data = await file.arrayBuffer();
-  const ctx = new OfflineAudioContext(1, 1, sampleRate);
-  let buffer;
-  try {
-    buffer = await ctx.decodeAudioData(data);
-  } catch (err) {
-    throw new AudioFileError(
-      'Formato audio non riconosciuto da questo browser. Prova con WAV, MP3, M4A, OGG o FLAC.',
-      err,
-    );
-  }
+  // decodeAudioData "consuma" il buffer: la prima decodifica lavora su una copia
+  const buffer = await decode(data.slice(0), sampleRate);
   if (buffer.length === 0) throw new AudioFileError('Il file audio è vuoto.');
   if (buffer.duration > maxMinutes * 60) {
     throw new AudioFileError(`Registrazione troppo lunga: il massimo è ${maxMinutes} minuti.`);
   }
-  const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
-  return { samples: toMono(channels), sampleRate: buffer.sampleRate, durationSec: buffer.duration };
+  const original = await decode(data, ORIGINAL_SAMPLE_RATE);
+  return {
+    samples: toMono(channelsOf(buffer)),
+    sampleRate: buffer.sampleRate,
+    durationSec: buffer.duration,
+    original: { samples: toPcm16(toMono(channelsOf(original))), sampleRate: original.sampleRate },
+  };
 }
+
+async function decode(data, sampleRate) {
+  const ctx = new OfflineAudioContext(1, 1, sampleRate);
+  try {
+    return await ctx.decodeAudioData(data);
+  } catch (err) {
+    throw new AudioFileError('Formato audio non riconosciuto da questo browser. Prova con WAV, MP3, M4A, OGG o FLAC.', err);
+  }
+}
+
+const channelsOf = (buffer) => Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
 
 /**
  * Media dei canali (stereo → mono). Con un canale solo restituisce una copia.

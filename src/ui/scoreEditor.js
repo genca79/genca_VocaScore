@@ -13,19 +13,22 @@ const DOTTED = new Set([0.75, 1.5, 3]);
 export class ScoreEditor {
   /**
    * @param {import('../music/scoreDocument.js').ScoreDocument} doc
-   * @param {{ toolbar:HTMLElement, info:HTMLElement, onSelectionChange:() => void }} options
+   * @param {{ toolbars:HTMLElement[], info:HTMLElement, onSelectionChange:() => void }} options
+   *   toolbars: contenitori di pulsanti con data-action (barra di modifica, Annulla/Ripeti in alto)
    */
-  constructor(doc, { toolbar, info, onSelectionChange }) {
+  constructor(doc, { toolbars, info, onSelectionChange }) {
     this.doc = doc;
-    this.toolbar = toolbar;
+    this.toolbars = toolbars;
     this.info = info;
     this.onSelectionChange = onSelectionChange;
     this.selectedId = null;
 
-    toolbar.addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-action]');
-      if (button) this.run(button.dataset.action, button.dataset.value);
-    });
+    for (const toolbar of toolbars) {
+      toolbar.addEventListener('click', (e) => {
+        const button = e.target.closest('button[data-action]');
+        if (button) this.run(button.dataset.action, button.dataset.value);
+      });
+    }
     document.addEventListener('keydown', (e) => this.#onKeyDown(e));
     doc.addEventListener('change', () => {
       // la nota selezionata può sparire (annulla, nuovo, apri)
@@ -122,7 +125,7 @@ export class ScoreEditor {
 
   #updateToolbar() {
     const note = this.selectedId ? this.doc.get(this.selectedId) : null;
-    for (const button of this.toolbar.querySelectorAll('button[data-action]')) {
+    for (const button of this.toolbars.flatMap((t) => [...t.querySelectorAll('button[data-action]')])) {
       const { action, value } = button.dataset;
       if (action === 'undo') button.disabled = !this.doc.canUndo;
       else if (action === 'redo') button.disabled = !this.doc.canRedo;
@@ -141,10 +144,11 @@ export class ScoreEditor {
         button.setAttribute('aria-pressed', String(dotted));
         if (note) button.disabled = !DOTTABLE.has(note.beats) && !dotted;
       }
-      if (action === 'rest' && note) button.textContent = note.midi === null ? 'Pausa → nota' : 'Nota → pausa';
+      if (action === 'rest' && note) button.textContent = note.midi === null ? 'Trasforma in nota' : 'Trasforma in pausa';
     }
     this.info.textContent = note
-      ? `Selezionata: ${this.doc.describe(this.selectedId)}`
-      : 'Clicca una nota per modificarla';
+      ? `Nota selezionata: ${this.doc.describe(this.selectedId)}`
+      : 'Clicca una nota della partitura per modificarla.';
+    this.info.classList.toggle('is-empty', !note);
   }
 }

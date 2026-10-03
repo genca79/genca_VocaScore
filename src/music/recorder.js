@@ -105,7 +105,7 @@ export class Recorder {
     rec.beginSession(t0Raw, { snap, grid });
     for (const n of notes) {
       rec.noteStarted(n.startMs);
-      rec.noteEnded({ midi: n.midi, endMs: n.endMs, transition: n.transition });
+      rec.noteEnded({ midi: n.midi, endMs: n.endMs, transition: n.transition, src: n.src });
     }
     return written;
   }
@@ -137,9 +137,10 @@ export class Recorder {
 
   /**
    * Fine di una nota: viene scritta dalla posizione di inizio a quella di fine agganciate.
+   * `src` (ripresa e tempi cantati) passa alla nota scritta, per il riascolto con la voce originale.
    * @returns {string|null} id della nota scritta (null se assorbita dalla precedente)
    */
-  noteEnded({ midi, endMs, transition = false }) {
+  noteEnded({ midi, endMs, transition = false, src = undefined }) {
     const s = this.session;
     if (!s || s.pendingStart === null) return null;
     Object.assign(s.rawNotes.at(-1), { midi, endMs, transition });
@@ -160,7 +161,7 @@ export class Recorder {
     }
     s.cursor = end;
     s.lastNoteBeats = end - start;
-    s.lastNoteId = this.doc.append({ midi, beats: s.lastNoteBeats });
+    s.lastNoteId = this.doc.append(src ? { midi, beats: s.lastNoteBeats, src } : { midi, beats: s.lastNoteBeats });
     return s.lastNoteId;
   }
 

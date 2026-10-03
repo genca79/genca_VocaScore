@@ -2,7 +2,16 @@
  * Collegamento al DOM. Nessuna logica audio: riceve dati e li mostra, inoltra le azioni dell'utente.
  */
 
+import { setIcon } from '../icons/index.js';
+import { TunerReadout } from '../music/tunerReadout.js';
+
 const METER_FLOOR_DB = -80; // livello mostrato come "vuoto" nel VU meter
+
+/** Testo e icona di un pulsante (l'icona è decorativa: il nome accessibile è il testo). */
+function setButton(button, label, icon) {
+  button.textContent = label;
+  setIcon(button, icon);
+}
 
 /** Mappa dBFS [−80, 0] → percentuale [0, 100] per il VU meter. */
 function dbToPercent(db) {
@@ -13,7 +22,7 @@ function dbToPercent(db) {
 /**
  * @param {{ onToggle:() => void, onHeadphonesChange:(v:boolean) => void,
  *           onAccompanyChange:(v:boolean) => void, accompany:boolean,
- *           onPlayToggle:() => void, onPreview:() => void,
+ *           onPlayToggle:() => void, onLoopChange:(v:boolean) => void, loop:boolean, onPreview:() => void,
  *           onSoundChange:(change:{ instrument?:string, octave?:number, brightness?:number, reverb?:number, volumeDb?:number }) => void,
  *           instruments:Record<string,{label:string}>, sound:object, gateOpenDb:number }} handlers
  */
@@ -23,6 +32,8 @@ export function createControls({
   onAccompanyChange,
   accompany,
   onPlayToggle,
+  onLoopChange,
+  loop,
   onPreview,
   onSoundChange,
   instruments,
@@ -33,17 +44,22 @@ export function createControls({
   const toggleBtn = $('mic-toggle');
   const statusEl = $('status');
   const errorEl = $('error');
+  // tuner
+  const tunerPanel = $('tuner-panel');
+  const tunerSource = $('tuner-source');
   const noteEl = $('note-name');
+  const sciEl = $('note-sci');
   const hzEl = $('note-hz');
-  const centsEl = $('note-cents');
-  const needleEl = $('tuner-needle');
+  const markerEl = $('tuner-marker');
+  const verdictEl = $('tuner-verdict');
+  const writtenEl = $('tuner-written');
+  const micLevel = $('mic-level');
+  const readout = new TunerReadout();
   const meterFill = $('meter-fill');
   const gateLed = $('gate-led');
   const headphonesInput = $('headphones');
   const feedbackEl = $('feedback-reason');
-  const outputBadge = $('output-badge');
   const beatEl = $('beat-indicator');
-  const tuningEl = $('tuning-info');
   const thresholdEl = $('meter-threshold');
   const levelEl = $('meter-label');
 
@@ -58,6 +74,15 @@ export function createControls({
   // ── Riascolto e suono ──
   const playBtn = $('play-score');
   playBtn.addEventListener('click', onPlayToggle);
+
+  // Loop: pulsante a due stati (il nome resta "Loop": lo stato è in aria-pressed)
+  const loopBtn = $('loop-toggle');
+  loopBtn.setAttribute('aria-pressed', String(loop));
+  loopBtn.addEventListener('click', () => {
+    const next = loopBtn.getAttribute('aria-pressed') !== 'true';
+    loopBtn.setAttribute('aria-pressed', String(next));
+    onLoopChange(next);
+  });
   $('preview-sound').addEventListener('click', onPreview);
 
   const instrumentSel = $('instrument');
@@ -77,21 +102,71 @@ export function createControls({
   bindSound('reverb', 'reverb');
   bindSound('volume', 'volumeDb');
 
+  /** Mostra una lettura del tuner (null = nessuna nota). */
+  function showReading(r) {
+    if (!r) {
+      noteEl.textContent = '–';
+      sciEl.textContent = '';
+      hzEl.textContent = '';
+      markerEl.hidden = true;
+      verdictEl.textContent = 'In attesa di una nota';
+      verdictEl.className = 'tuner-verdict';
+      return;
+    }
+    noteEl.textContent = r.italian;
+    sciEl.textContent = r.scientific;
+    hzEl.textContent = r.hz ? `${r.hz.toFixed(1)} Hz` : '';
+    markerEl.hidden = false;
+    markerEl.style.left = `${50 + Math.max(-50, Math.min(50, r.cents))}%`; // ±50 cent → 0–100%
+    verdictEl.textContent = r.verdict.label;
+    verdictEl.className = `tuner-verdict is-${r.verdict.level}`;
+  }
+
+  // Il pulsante cambia nome (Registra → Stop): niente aria-pressed, che con un nome che cambia
+  // farebbe leggere "Stop, premuto".
   const STATES = {
-    idle: { label: 'Avvia microfono', status: 'Microfono spento', busy: false, running: false },
-    starting: { label: 'Avvio…', status: 'Richiesta del permesso per il microfono…', busy: true, running: false },
-    running: { label: 'Ferma microfono', status: 'In ascolto: canta una nota!', busy: false, running: true },
+    idle: { label: 'Registra', icon: 'mic', status: 'Pronto. Premi Registra e canta.', busy: false, running: false },
+    starting: { label: 'Avvio…', icon: 'mic', status: 'Richiesta del permesso per il microfono…', busy: true, running: false },
+    running: { label: 'Stop', icon: 'square', status: 'In registrazione: canta!', busy: false, running: true },
   };
 
   return {
     /** @param {'idle'|'starting'|'running'} state */
     setState(state) {
       const s = STATES[state];
-      toggleBtn.textContent = s.label;
+      setButton(toggleBtn, s.label, s.icon);
       toggleBtn.disabled = s.busy;
       toggleBtn.classList.toggle('is-running', s.running);
-      toggleBtn.setAttribute('aria-pressed', String(s.running));
       statusEl.textContent = s.status;
+      if (state === 'idle') this.setTuner(null);
+      else this.setTuner({ source: 'Microfono: la nota che stai cantando', mic: true });
+    },
+
+    /**
+     * Tuner: visibile registrando (microfono, con il livello) e ascoltando (la voce attiva).
+     * @param {null | { source:string, mic?:boolean }} mode null = nascosto
+     */
+    setTuner(mode) {
+      tunerPanel.hidden = !mode;
+      readout.reset();
+      showReading(null);
+      writtenEl.textContent = '';
+      if (!mode) return;
+      tunerSource.textContent = mode.source;
+      micLevel.hidden = !mode.mic;
+    },
+
+    /**
+     * Un frame di altezza per il tuner (microfono o voce in riascolto), ~60 volte al secondo.
+     * @param {{ exactMidi:number|null, hz?:number|null, timeMs:number }} frame altezza reale (La = 440 Hz)
+     */
+    updatePitch(frame) {
+      showReading(readout.update(frame));
+    },
+
+    /** Riascolto: la nota della partitura che sta suonando nella voce seguita dal tuner. */
+    setWritten(text) {
+      writtenEl.textContent = text;
     },
 
     showError(message) {
@@ -104,16 +179,13 @@ export function createControls({
       errorEl.textContent = '';
     },
 
-    /** Chiamata a ogni frame (~60 fps): solo assegnazioni economiche, niente layout pesanti. */
+    /** Frame del microfono (~60 fps): livello, soglia, e l'altezza per il tuner. */
     updateFrame(frame) {
       if (!frame) {
         meterFill.style.width = '0%';
         levelEl.textContent = 'Livello';
         gateLed.classList.remove('is-open');
-        noteEl.textContent = '–';
-        hzEl.textContent = '— Hz';
-        centsEl.textContent = '';
-        needleEl.style.transform = 'translateX(-50%) rotate(0deg)';
+        showReading(null);
         return;
       }
       meterFill.style.width = `${dbToPercent(frame.db)}%`;
@@ -123,19 +195,7 @@ export function createControls({
         ? `${Math.round(frame.db)} / ${Math.round(frame.gateOpenDb)} dB`
         : `— / ${Math.round(frame.gateOpenDb)} dB`;
       gateLed.classList.toggle('is-open', frame.gateOpen);
-      if (frame.note) {
-        const { name, hz, cents } = frame.note;
-        noteEl.textContent = name;
-        hzEl.textContent = `${hz.toFixed(1)} Hz`;
-        centsEl.textContent = `${cents > 0 ? '+' : ''}${cents} cent`;
-        // ±50 cents → ±45° di rotazione dell'ago dell'accordatore
-        needleEl.style.transform = `translateX(-50%) rotate(${cents * 0.9}deg)`;
-        needleEl.classList.toggle('is-in-tune', Math.abs(cents) <= 10);
-      } else {
-        noteEl.textContent = '–';
-        hzEl.textContent = '— Hz';
-        centsEl.textContent = '';
-      }
+      this.updatePitch({ exactMidi: frame.note?.exactMidi ?? null, hz: frame.note?.hz ?? null, timeMs: frame.timeMs });
     },
 
     /**
@@ -166,22 +226,8 @@ export function createControls({
     },
 
     setPlaying(playing) {
-      playBtn.textContent = playing ? '■ Stop' : '▶ Riascolta';
+      setButton(playBtn, playing ? 'Stop' : 'Ascolta', playing ? 'square' : 'play');
       playBtn.classList.toggle('is-playing', playing);
-      playBtn.setAttribute('aria-pressed', String(playing));
-    },
-
-    /** Scarto d'intonazione stimato (cents) e frequenza di riferimento corrispondente. */
-    setTuning(cents) {
-      if (cents === 0) {
-        tuningEl.textContent = 'Intonazione: allineata a La = 440 Hz';
-        tuningEl.classList.remove('is-active');
-        return;
-      }
-      const a4 = 440 * 2 ** (cents / 1200);
-      const sign = cents > 0 ? '+' : '−';
-      tuningEl.textContent = `Intonazione stimata: ${sign}${Math.abs(cents)} cent (La = ${a4.toFixed(1)} Hz), compensata`;
-      tuningEl.classList.add('is-active');
     },
 
     setCanPlay(canPlay) {
@@ -191,10 +237,9 @@ export function createControls({
     /** @param {import('../audio/feedbackGuard.js').FeedbackState} state */
     setFeedback(state) {
       headphonesInput.checked = state.liveSynthEnabled;
-      feedbackEl.textContent = state.reason;
-      feedbackEl.classList.toggle('is-warning', state.warning);
-      outputBadge.textContent = state.outputAllowed ? 'Synth attivo' : 'Synth muto';
-      outputBadge.classList.toggle('is-on', state.outputAllowed);
+      // Solo l'avviso che serve (synth attivo con l'uscita sugli altoparlanti): niente etichette di stato.
+      feedbackEl.textContent = state.warning ? state.reason : '';
+      feedbackEl.hidden = !state.warning;
     },
   };
 }

@@ -1,5 +1,6 @@
-import { GRID, TIME_SIGNATURES } from './notation.js';
+import { GRID, TIME_SIGNATURES, timeSignatureInfo } from './notation.js';
 import { midiToNoteName } from './noteUtils.js';
+import { base64ToPcm16, pcm16ToBase64 } from '../storage/pcm.js';
 
 /**
  * Documento dello spartito: impostazioni + una o più VOCI (partitura), con annulla/ripeti.
@@ -15,8 +16,13 @@ import { midiToNoteName } from './noteUtils.js';
  * Due tipi di modifica:
  *   - contenuto (note, nomi, chiavi, impostazioni): passa da #commit(), che salva lo stato precedente
  *     nella pila "annulla", aumenta `revision` e notifica un evento 'change';
- *   - mixer (strumento, muto, solo) e voce attiva: si salvano nel file ma NON entrano in annulla/ripeti
- *     (annullare una nota non deve riaccendere una voce messa in muto) e non cambiano `revision`.
+ *   - mixer (strumento, sorgente, muto, solo) e voce attiva: si salvano nel file ma NON entrano in
+ *     annulla/ripeti (annullare una nota non deve riaccendere una voce messa in muto) e non cambiano `revision`.
+ *
+ * Audio originale: ogni registrazione o file trascritto è una "ripresa" (take) conservata in `audio`
+ * (PCM 16 bit, fuori da annulla/ripeti perché pesante). Ogni nota trascritta ricorda da quale ripresa
+ * viene e quando è stata cantata davvero (`src`); una nota modificata a mano è `edited`. Nel riascolto
+ * una voce con sorgente "originale" suona la sua ripresa così com'è (vedi playbackPlan).
  */
 
 export const FORMAT_ID = 'vocascore';
@@ -45,10 +51,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 export const GRID_OPTIONS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 1, label: '1/4' },
-  { value: 0.5, label: '1/8' },
-  { value: 0.25, label: '1/16' },
+  { value: 'auto', label: 'Automatica' },
+  { value: 1, label: 'Semiminime (1/4)' },
+  { value: 0.5, label: 'Crome (1/8)' },
+  { value: 0.25, label: 'Semicrome (1/16)' },
 ];
 
 /** Errore di formato durante il caricamento di un file. */
@@ -62,14 +68,47 @@ export class ScoreFormatError extends Error {
 const clampMidi = (m) => Math.min(MAX_MIDI, Math.max(MIN_MIDI, Math.round(m)));
 const snapBeats = (b) => Math.min(MAX_BEATS, Math.max(GRID, Math.round(b / GRID) * GRID));
 const cleanName = (name, fallback) => String(name ?? '').trim().slice(0, MAX_NAME) || fallback;
+/** Volume di una voce nel mix (dB rispetto al livello normale). */
+export const MIN_VOICE_DB = -30;
+export const MAX_VOICE_DB = 6;
+const clampVolume = (db) => {
+  const v = Math.round(Number(db));
+  return Number.isFinite(v) ? Math.min(MAX_VOICE_DB, Math.max(MIN_VOICE_DB, v)) : 0;
+};
 const totalBeats = (notes) => notes.reduce((sum, n) => sum + n.beats, 0);
 
 /**
- * @typedef {{ id:string, midi:number|null, beats:number, restoreMidi?:number }} Note
+ * @typedef {{ take:string, start:number, end:number }} NoteSource
+ *   da quale ripresa viene la nota e quando è stata cantata (s dall'inizio della ripresa)
+ * @typedef {{ id:string, midi:number|null, beats:number, restoreMidi?:number, src?:NoteSource, edited?:boolean }} Note
  * @typedef {{ id:string, name:string, clef:'auto'|'treble'|'bass', instrument:string|null,
- *             muted:boolean, solo:boolean, notes:Note[] }} Voice
- *   instrument null = lo strumento generale di "Suono Synth"
+ *             source:'original'|'synth', volumeDb:number, muted:boolean, solo:boolean, notes:Note[] }} Voice
+ *   volumeDb: volume della voce nel mix, in dB (0 = normale; da MIN_VOICE_DB a MAX_VOICE_DB)
+ *   instrument null = lo strumento generale di "Suono Synth"; source 'original' = nel riascolto la
+ *   voce originale, se c'è il suo audio (altrimenti il synth)
+ * @typedef {{ sampleRate:number, samples:Int16Array }} Take audio di una ripresa
  */
+
+/** Prefisso degli id di ripresa il cui audio non è più disponibile (mai generati da addAudio). */
+const LOST_TAKE = 'lost-';
+
+/** Margini attorno alle note quando si suona una ripresa: l'attacco e la coda della voce. */
+const CLIP_LEAD_SEC = 0.15;
+const CLIP_TAIL_SEC = 0.3;
+
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+function cleanSource(src) {
+  if (!src || typeof src.take !== 'string' || src.take.length > 32) return undefined;
+  const start = Number(src.start);
+  const end = Number(src.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return undefined;
+  return { take: src.take, start, end };
+}
 
 export class ScoreDocument extends EventTarget {
   constructor() {
@@ -77,6 +116,9 @@ export class ScoreDocument extends EventTarget {
     this.settings = { ...DEFAULT_SETTINGS };
     this.nextId = 1;
     this.nextVoiceId = 1;
+    this.nextTakeId = 1;
+    /** @type {Map<string, Take>} audio originale delle riprese (fuori da annulla/ripeti) */
+    this.audio = new Map();
     /** @type {Voice[]} */
     this.voices = [this.#newVoice('Voce 1')];
     this.activeVoiceId = this.voices[0].id;
@@ -151,7 +193,7 @@ export class ScoreDocument extends EventTarget {
    * @param {string|null} [fromId]
    * @param {{ fromBeat?:number, excludeVoiceId?:string|null }} [options]
    *   excludeVoiceId: voce da non suonare (quella che si sta registrando)
-   * @returns {Array<{ id:string, voiceId:string, instrument:string|null, time:number, duration:number, midi:number }>}
+   * @returns {Array<{ id:string, voiceId:string, instrument:string|null, gainDb:number, time:number, duration:number, midi:number }>}
    *   tempi in secondi dal punto di partenza, in ordine di tempo
    */
   playbackEvents(fromId = null, { fromBeat = 0, excludeVoiceId = null } = {}) {
@@ -167,6 +209,7 @@ export class ScoreDocument extends EventTarget {
             id: note.id,
             voiceId: voice.id,
             instrument: voice.instrument,
+            gainDb: voice.volumeDb,
             time: (beat - start) * secPerBeat,
             duration: note.beats * secPerBeat,
             midi: note.midi,
@@ -176,6 +219,116 @@ export class ScoreDocument extends EventTarget {
       }
     }
     return events.sort((a, b) => a.time - b.time);
+  }
+
+  /**
+   * Piano del riascolto: come playbackEvents, ma le voci con sorgente "originale" (e il loro audio)
+   * suonano la registrazione così com'è invece del synth.
+   *
+   * Ogni ripresa di una voce diventa una "clip" posata sulla linea del tempo dello spartito: lo
+   * scostamento è la mediana di (tempo scritto − tempo cantato) delle sue note, robusta a qualche nota
+   * quantizzata lontano. Si sente il canto reale, al suo tempo reale (strada 1: niente stiramenti).
+   * Nella clip:
+   *   - le note NON modificate diventano solo "segnali" per evidenziarle (silent), nel momento in cui
+   *     vengono cantate davvero;
+   *   - le note modificate a mano vengono zittite nell'audio (mutes) e, se hanno un'altezza, suonate
+   *     dal synth alla loro posizione scritta;
+   *   - le note senza ripresa (scritte o duplicate a mano) restano al synth.
+   *
+   * @param {string|null} [fromId]
+   * @param {{ fromBeat?:number, excludeVoiceId?:string|null }} [options]
+   * @returns {{ events:Array<{ id:string, voiceId:string, instrument:string|null, time:number,
+   *             duration:number, midi:number, silent?:boolean }>,
+   *             clips:Array<{ voiceId:string, take:string, at:number, from:number, to:number,
+   *             mutes:Array<[number, number]> }> }}
+   *   clip: la ripresa `take` suona il suo tratto [from, to] (s della ripresa); il suo istante 0 cade
+   *   al tempo `at` (s dal punto di partenza, anche negativo); mutes = tratti da zittire (s della ripresa)
+   */
+  playbackPlan(fromId = null, { fromBeat = 0, excludeVoiceId = null } = {}) {
+    const secPerBeat = 60 / this.settings.bpm;
+    const start = fromId && this.get(fromId) ? this.beatOf(fromId) : fromBeat;
+    const events = this.playbackEvents(fromId, { fromBeat, excludeVoiceId });
+    const byId = new Map(events.map((e) => [e.id, e]));
+    const clips = [];
+
+    for (const voice of this.audibleVoices) {
+      if (voice.id === excludeVoiceId || voice.source !== 'original') continue;
+      // tempo scritto (s dal punto di partenza) di ogni nota della voce
+      const placed = [];
+      let beat = 0;
+      for (const note of voice.notes) {
+        if (note.src && this.audio.has(note.src.take)) placed.push({ note, time: (beat - start) * secPerBeat });
+        beat += note.beats;
+      }
+      for (const take of new Set(placed.map((p) => p.note.src.take))) {
+        const own = placed.filter((p) => p.note.src.take === take);
+        const anchors = own.filter((p) => !p.note.edited && p.note.midi !== null);
+        if (anchors.length === 0) continue; // tutte modificate: resta il synth
+        const at = median(anchors.map((p) => p.time - p.note.src.start));
+        const from = Math.max(0, Math.min(...own.map((p) => p.note.src.start)) - CLIP_LEAD_SEC);
+        const to = Math.max(...own.map((p) => p.note.src.end)) + CLIP_TAIL_SEC;
+        if (at + to <= 0) continue; // la ripresa finisce prima del punto di partenza
+        const mutes = own.filter((p) => p.note.edited).map((p) => [p.note.src.start, p.note.src.end]);
+        clips.push({ voiceId: voice.id, take, at, from, to, mutes, gainDb: voice.volumeDb });
+
+        for (const { note } of anchors) {
+          const event = byId.get(note.id);
+          if (!event) continue; // prima del punto di partenza
+          event.silent = true; // la suona la ripresa: resta solo per l'evidenziazione…
+          event.time = Math.max(0, at + note.src.start); // …nel momento in cui è stata cantata
+          event.duration = note.src.end - note.src.start;
+        }
+      }
+    }
+    return { events: events.sort((a, b) => a.time - b.time), clips };
+  }
+
+  /** La voce ha note collegate a un audio originale disponibile? */
+  hasAudio(voiceId) {
+    return Boolean(this.voiceById(voiceId)?.notes.some((n) => n.src && this.audio.has(n.src.take)));
+  }
+
+  /**
+   * La voce veniva da una registrazione il cui audio non c'è più (pagina ricaricata, o file salvato
+   * senza audio e riaperto dalla bozza)? Nel riascolto suona il synth: va detto all'utente.
+   */
+  lostAudio(voiceId) {
+    return Boolean(this.voiceById(voiceId)?.notes.some((n) => n.src && !this.audio.has(n.src.take)));
+  }
+
+  /** Cancella tutte le note di una voce (annullabile); la voce resta, con nome, chiave e mixer. */
+  clearVoice(voiceId) {
+    const voice = this.#requireVoice(voiceId);
+    if (voice.notes.length === 0) return;
+    this.#commit('clear-voice', () => (voice.notes = []));
+  }
+
+  /**
+   * Conserva l'audio originale di una ripresa (fuori da annulla/ripeti). Restituisce l'id da usare come
+   * `take` nelle note trascritte da quell'audio.
+   * @param {Take} take
+   */
+  addAudio({ sampleRate, samples }) {
+    const id = `t${this.nextTakeId++}`;
+    this.audio.set(id, { sampleRate, samples });
+    return id;
+  }
+
+  /** Durata della partitura in beats: la voce più lunga. */
+  get lengthBeats() {
+    return Math.max(0, ...this.voices.map((v) => totalBeats(v.notes)));
+  }
+
+  /**
+   * Durata (s) di un giro del loop dal punto di partenza: fino alla fine della battuta che contiene
+   * l'ultima nota, così il giro ricomincia a tempo.
+   * @param {string|null} [fromId] nota da cui parte il riascolto (null = inizio)
+   */
+  loopSeconds(fromId = null) {
+    const measure = timeSignatureInfo(this.settings.timeSignature).measureBeats;
+    const end = Math.ceil(this.lengthBeats / measure - 1e-9) * measure;
+    const start = fromId && this.get(fromId) ? this.beatOf(fromId) : 0;
+    return Math.max(0, end - start) * (60 / this.settings.bpm);
   }
 
   /** Posizione (beats dall'inizio) della nota `id` nella sua voce. */
@@ -222,7 +375,9 @@ export class ScoreDocument extends EventTarget {
     let newId;
     this.#commit('insert', () => {
       newId = this.#newId();
-      voice.notes.splice(index + 1, 0, { ...voice.notes[index], id: newId });
+      // la copia non viene da una registrazione: nel riascolto la suona il synth
+      const { src, edited, ...copy } = voice.notes[index];
+      voice.notes.splice(index + 1, 0, { ...copy, id: newId });
     });
     return newId;
   }
@@ -240,7 +395,10 @@ export class ScoreDocument extends EventTarget {
     if (!note || note.midi === null) return;
     const midi = clampMidi(note.midi + semitones);
     if (midi === note.midi) return;
-    this.#commit('edit', () => (note.midi = midi));
+    this.#commit('edit', () => {
+      note.midi = midi;
+      markEdited(note);
+    });
   }
 
   setBeats(id, beats) {
@@ -248,7 +406,10 @@ export class ScoreDocument extends EventTarget {
     if (!note) return;
     const snapped = snapBeats(beats);
     if (snapped === note.beats) return;
-    this.#commit('edit', () => (note.beats = snapped));
+    this.#commit('edit', () => {
+      note.beats = snapped;
+      markEdited(note);
+    });
   }
 
   /** Nota ↔ pausa. Una pausa ridiventa nota con l'altezza della nota più vicina (o Do4). */
@@ -264,6 +425,7 @@ export class ScoreDocument extends EventTarget {
       } else {
         note.midi = note.restoreMidi ?? nearestPitch(voice.notes, index) ?? 60;
       }
+      markEdited(note);
     });
   }
 
@@ -286,9 +448,19 @@ export class ScoreDocument extends EventTarget {
   /** Sostituisce il contenuto con un documento caricato (annullabile). */
   load(data) {
     const parsed = parseScore(data);
+    // Le riprese del file prendono id nuovi: non devono confondersi con quelle già in memoria.
+    const takeIds = new Map([...parsed.audio].map(([take, audio]) => [take, this.addAudio(audio)]));
+    // Riprese citate dalle note ma senza audio (bozza dopo un ricaricamento): un id "perso" che non
+    // coincide mai con quelli di addAudio, così una ripresa nuova non viene collegata a note vecchie.
+    const relink = (notes) =>
+      notes.map((n) => {
+        if (!n.src) return n;
+        if (!takeIds.has(n.src.take)) takeIds.set(n.src.take, `${LOST_TAKE}${this.nextTakeId++}`);
+        return { ...n, src: { ...n.src, take: takeIds.get(n.src.take) } };
+      });
     this.#commit('load', () => {
       this.settings = parsed.settings;
-      this.voices = parsed.voices.map((v) => ({ ...this.#newVoice(v.name), ...v, notes: this.#freshNotes(v.notes) }));
+      this.voices = parsed.voices.map((v) => ({ ...this.#newVoice(v.name), ...v, notes: this.#freshNotes(relink(v.notes)) }));
       this.activeVoiceId = this.voices[Math.min(parsed.activeVoice, this.voices.length - 1)].id;
     });
   }
@@ -361,12 +533,14 @@ export class ScoreDocument extends EventTarget {
     this.#emit('active', false);
   }
 
-  /** Mixer di una voce: strumento, muto, solo (salvati nel file, non annullabili). */
-  setMix(voiceId, { instrument, muted, solo }) {
+  /** Mixer di una voce: strumento, sorgente (voce originale o synth), muto, solo, volume (salvati nel file, non annullabili). */
+  setMix(voiceId, { instrument, source, muted, solo, volumeDb }) {
     const voice = this.#requireVoice(voiceId);
     if (instrument !== undefined) voice.instrument = instrument || null;
+    if (source !== undefined) voice.source = source === 'synth' ? 'synth' : 'original';
     if (muted !== undefined) voice.muted = Boolean(muted);
     if (solo !== undefined) voice.solo = Boolean(solo);
+    if (volumeDb !== undefined) voice.volumeDb = clampVolume(volumeDb);
     this.#emit('mix', false);
   }
 
@@ -395,22 +569,46 @@ export class ScoreDocument extends EventTarget {
 
   // ── Serializzazione ────────────────────────────────────────────────────
 
-  /** Formato del file salvato: leggibile, senza gli id interni. */
-  toJSON() {
-    return {
+  /**
+   * Formato del file salvato: leggibile, senza gli id interni.
+   * @param {{ includeAudio?:boolean, keepSources?:boolean }} [options]
+   *   includeAudio: aggiunge l'audio originale delle riprese usate (PCM 16 bit in base64) e il
+   *   collegamento delle note; senza, il file contiene solo la partitura.
+   *   keepSources: tiene il collegamento delle note (`src`) anche senza l'audio: lo usa la bozza
+   *   automatica, così dopo un ricaricamento si sa quali voci avevano un audio originale ormai perso.
+   */
+  toJSON({ includeAudio = false, keepSources = false } = {}) {
+    const used = new Set();
+    const data = {
       format: FORMAT_ID,
       version: FORMAT_VERSION,
       ...this.settings,
       activeVoice: Math.max(0, this.voices.indexOf(this.voice)),
-      voices: this.voices.map(({ name, clef, instrument, muted, solo, notes }) => ({
+      voices: this.voices.map(({ name, clef, instrument, source, volumeDb, muted, solo, notes }) => ({
         name,
         clef,
         instrument,
+        source,
+        volumeDb,
         muted,
         solo,
-        notes: notes.map(({ midi, beats }) => ({ midi, beats })),
+        notes: notes.map(({ midi, beats, src, edited }) => {
+          const withAudio = includeAudio && src && this.audio.has(src.take);
+          if (!src || (!withAudio && !keepSources)) return { midi, beats };
+          if (withAudio) used.add(src.take);
+          return edited ? { midi, beats, src, edited } : { midi, beats, src };
+        }),
       })),
     };
+    if (used.size > 0) {
+      data.audio = Object.fromEntries(
+        [...used].map((take) => {
+          const { sampleRate, samples } = this.audio.get(take);
+          return [take, { sampleRate, pcm16: pcm16ToBase64(samples) }];
+        }),
+      );
+    }
+    return data;
   }
 
   // ── Interni ────────────────────────────────────────────────────────────
@@ -430,7 +628,7 @@ export class ScoreDocument extends EventTarget {
   /** Ripristina il contenuto; il mixer resta quello attuale per le voci che esistono ancora. */
   #restore(snapshot) {
     const { settings, voices } = JSON.parse(snapshot);
-    const mix = new Map(this.voices.map((v) => [v.id, { instrument: v.instrument, muted: v.muted, solo: v.solo }]));
+    const mix = new Map(this.voices.map((v) => [v.id, { instrument: v.instrument, source: v.source, muted: v.muted, solo: v.solo, volumeDb: v.volumeDb }]));
     this.settings = settings;
     this.voices = voices.map((v) => ({ ...v, ...(mix.get(v.id) ?? {}) }));
     if (!this.voiceById(this.activeVoiceId)) this.activeVoiceId = this.voices[0].id;
@@ -447,7 +645,17 @@ export class ScoreDocument extends EventTarget {
 
   /** @returns {Voice} */
   #newVoice(name) {
-    return { id: `v${this.nextVoiceId++}`, name, clef: 'auto', instrument: null, muted: false, solo: false, notes: [] };
+    return {
+      id: `v${this.nextVoiceId++}`,
+      name,
+      clef: 'auto',
+      instrument: null,
+      source: 'original',
+      volumeDb: 0,
+      muted: false,
+      solo: false,
+      notes: [],
+    };
   }
 
   /** "Voce N" con il primo N non ancora usato. */
@@ -459,11 +667,15 @@ export class ScoreDocument extends EventTarget {
   }
 
   #freshNotes(notes) {
-    return notes.map(({ midi, beats }) => ({
-      id: this.#newId(),
-      midi: midi === null ? null : clampMidi(midi),
-      beats: snapBeats(beats),
-    }));
+    return notes.map(({ midi, beats, src, edited }) => {
+      const note = { id: this.#newId(), midi: midi === null ? null : clampMidi(midi), beats: snapBeats(beats) };
+      const source = cleanSource(src);
+      if (source) {
+        note.src = source;
+        if (edited === true) note.edited = true;
+      }
+      return note;
+    });
   }
 
   #requireVoice(voiceId) {
@@ -471,6 +683,11 @@ export class ScoreDocument extends EventTarget {
     if (!voice) throw new RangeError(`Voce inesistente: ${voiceId}`);
     return voice;
   }
+}
+
+/** Una nota cantata e poi modificata a mano non corrisponde più all'audio: nel riascolto la suona il synth. */
+function markEdited(note) {
+  if (note.src) note.edited = true;
 }
 
 function nearestPitch(notes, index) {
@@ -504,8 +721,36 @@ function parseNotes(list, voiceName) {
     if ((midi !== null && !Number.isFinite(midi)) || !Number.isFinite(beats) || beats <= 0) {
       throw new ScoreFormatError(`Nota ${i + 1}${where} non valida nel file.`);
     }
-    return { midi: midi === null ? null : clampMidi(midi), beats: snapBeats(beats) };
+    const note = { midi: midi === null ? null : clampMidi(midi), beats: snapBeats(beats) };
+    const src = cleanSource(n?.src);
+    if (src) Object.assign(note, n.edited === true ? { src, edited: true } : { src });
+    return note;
   });
+}
+
+const MIN_AUDIO_RATE = 8000;
+const MAX_AUDIO_RATE = 192000;
+
+/**
+ * Audio originale salvato nel file: { id: { sampleRate, pcm16 (base64) } }.
+ * @returns {Map<string, Take>}
+ */
+function parseAudio(raw) {
+  const audio = new Map();
+  if (raw === undefined) return audio;
+  if (!raw || typeof raw !== 'object') throw new ScoreFormatError('Audio originale non valido nel file.');
+  for (const [take, entry] of Object.entries(raw)) {
+    const sampleRate = Number(entry?.sampleRate);
+    if (!Number.isInteger(sampleRate) || sampleRate < MIN_AUDIO_RATE || sampleRate > MAX_AUDIO_RATE || typeof entry?.pcm16 !== 'string') {
+      throw new ScoreFormatError('Audio originale non valido nel file.');
+    }
+    try {
+      audio.set(take, { sampleRate, samples: base64ToPcm16(entry.pcm16) });
+    } catch {
+      throw new ScoreFormatError('Audio originale non valido nel file.');
+    }
+  }
+  return audio;
 }
 
 /**
@@ -513,11 +758,11 @@ function parseNotes(list, voiceName) {
  * e si scartano campi sconosciuti, invece di fidarsi del contenuto.
  * Versione 1 (una sola voce, `notes` e `clef` in cima) → partitura con una voce.
  *
- * @returns {{ settings:object, voices:Array<Omit<Voice, 'id'>>, activeVoice:number }}
+ * @returns {{ settings:object, voices:Array<Omit<Voice, 'id'>>, activeVoice:number, audio:Map<string, Take> }}
  */
 export function parseScore(data) {
-  if (!data || typeof data !== 'object') throw new ScoreFormatError('Il file non contiene uno spartito valido.');
-  if (data.format !== FORMAT_ID) throw new ScoreFormatError('Il file non è uno spartito GENCA VocaScore.');
+  if (!data || typeof data !== 'object') throw new ScoreFormatError('Il file non contiene una partitura valida.');
+  if (data.format !== FORMAT_ID) throw new ScoreFormatError('Il file non è una partitura GENCA VocaScore.');
   if (typeof data.version !== 'number' || data.version > FORMAT_VERSION) {
     throw new ScoreFormatError('Il file è stato creato con una versione più recente di GENCA VocaScore.');
   }
@@ -538,11 +783,13 @@ export function parseScore(data) {
       name,
       clef: CLEFS.includes(v?.clef) ? v.clef : 'auto',
       instrument: typeof v?.instrument === 'string' && v.instrument.length <= 32 ? v.instrument : null,
+      source: v?.source === 'synth' ? 'synth' : 'original',
+      volumeDb: clampVolume(v?.volumeDb),
       muted: v?.muted === true,
       solo: v?.solo === true,
       notes: parseNotes(v?.notes, rawVoices.length > 1 ? name : null),
     };
   });
   const active = Number.isInteger(data.activeVoice) && data.activeVoice >= 0 && data.activeVoice < voices.length ? data.activeVoice : 0;
-  return { settings: sanitizeSettings(data), voices, activeVoice: active };
+  return { settings: sanitizeSettings(data), voices, activeVoice: active, audio: parseAudio(data.audio) };
 }

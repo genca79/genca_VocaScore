@@ -7,10 +7,11 @@
  *                   ├─ ogni 0,5 s → Web Worker (trascrizione) → LiveTranscriber → anteprima sul pentagramma
  *                   └─ allo Stop  → Web Worker (intera registrazione) → ScoreDocument.replaceRange (annullabile)
  *
- *   File audio (Carica Audio ALA) → Web Worker (stessa trascrizione) → ScoreDocument.replaceRange
+ *   File audio (Importa audio) → Web Worker (stessa trascrizione) → ScoreDocument.replaceRange
  *   ScoreDocument → ScoreRenderer (+ ScoreEditor) · riascolto · bozza · MusicXML · PDF
  */
 import './styles/main.css';
+import * as Tone from 'tone';
 import { CONFIG } from './config.js';
 import { bus } from './core/eventBus.js';
 import { initAudioContext } from './audio/audioContext.js';
@@ -18,7 +19,7 @@ import { AudioInput } from './audio/audioInput.js';
 import { NoiseGate } from './audio/noiseGate.js';
 import { PitchAnalyzer } from './audio/pitchDetector.js';
 import { FeedbackGuard } from './audio/feedbackGuard.js';
-import { hzToNote } from './music/noteUtils.js';
+import { hzToNote, midiToHz, midiToItalianName } from './music/noteUtils.js';
 import { NoteStabilizer } from './music/noteStabilizer.js';
 import { TuningEstimator } from './music/tuning.js';
 import { transcribeInWorker } from './music/offlineClient.js';
@@ -34,15 +35,23 @@ import { Metronome } from './output/metronome.js';
 import { INSTRUMENTS } from './output/instruments.js';
 import { ScoreRenderer } from './output/scoreRenderer.js';
 import { exportPdf } from './output/pdfExporter.js';
+import { renderMix } from './output/mixExport.js';
+import { encodeWav } from './storage/wav.js';
 import { toMusicXML } from './music/musicxml.js';
 import { loadDraft, readJsonFile, saveDraft, saveFile } from './storage/fileStorage.js';
+import { fromPcm16 } from './storage/pcm.js';
 import { createControls } from './ui/controls.js';
 import { createDocumentControls } from './ui/documentControls.js';
 import { ScoreEditor } from './ui/scoreEditor.js';
 import { createVoicePanel } from './ui/voicePanel.js';
+import { decorateIcons } from './icons/index.js';
+
+// Icone decorative accanto ai testi dei pulsanti statici (data-icon in index.html).
+decorateIcons(document);
 
 const SOUND_STORAGE_KEY = 'vocascore.sound';
 const ACCOMPANY_STORAGE_KEY = 'vocascore.accompany';
+const LOOP_STORAGE_KEY = 'vocascore.loop';
 
 // ── Modello e moduli ───────────────────────────────────────────────────────
 const doc = new ScoreDocument();
@@ -76,6 +85,8 @@ let session = null;
 let finishing = null;
 /** Registrando una nuova voce, si sentono le altre (solo in cuffia). Preferenza ricordata nel browser. */
 let accompany = loadFlag(ACCOMPANY_STORAGE_KEY, true);
+/** Ascolto in loop (preferenza ricordata nel browser). */
+let loop = loadFlag(LOOP_STORAGE_KEY, false);
 
 // Stato della vista dello spartito
 const playing = new Map(); // id voce → id della nota che sta suonando nel riascolto
@@ -86,7 +97,7 @@ const score = new ScoreRenderer(document.getElementById('score'), {
   onSelect: (id) => editor.select(id),
 });
 const editor = new ScoreEditor(doc, {
-  toolbar: document.getElementById('edit-toolbar'),
+  toolbars: [document.getElementById('edit-toolbar'), document.getElementById('history-toolbar')],
   info: document.getElementById('selection-info'),
   onSelectionChange: renderScore,
 });
@@ -100,6 +111,12 @@ const ui = createControls({
   },
   accompany,
   onPlayToggle: togglePlayback,
+  onLoopChange: (value) => {
+    loop = value;
+    saveFlag(LOOP_STORAGE_KEY, value);
+    engine?.setLoop(value); // vale anche per il riascolto in corso
+  },
+  loop,
   onPreview: previewSound,
   onSoundChange: applySoundChange,
   instruments: INSTRUMENTS,
@@ -112,13 +129,19 @@ const docUi = createDocumentControls(doc, {
     engine?.stopPlayback();
     stop(); // la registrazione in corso viene scritta prima di svuotare
     doc.clear();
-    docUi.showStatus('Nuovo spartito. Ctrl+Z per tornare al precedente.');
+    docUi.showStatus('Nuova partitura. Ctrl+Z per tornare alla precedente.');
   },
   onOpen: openScore,
   onLoadAudio: loadAudio,
-  onSave: () => exportFile('vocascore', () => JSON.stringify(doc.toJSON(), null, 2), 'Spartito salvato.'),
+  onSave: ({ includeAudio }) =>
+    exportFile(
+      'vocascore',
+      () => JSON.stringify(doc.toJSON({ includeAudio }), null, 2),
+      includeAudio ? 'Partitura salvata con l’audio originale.' : 'Partitura salvata.',
+    ),
   onExportMusicXml: () => exportFile('musicxml', () => toMusicXML(doc), 'MusicXML esportato.'),
   onExportPdf: () => exportFile('pdf', () => exportPdf(doc), 'PDF creato.'),
+  onExportAudio: exportAudio,
 });
 
 const voicePanel = createVoicePanel(doc, {
@@ -126,6 +149,8 @@ const voicePanel = createVoicePanel(doc, {
   addButton: document.getElementById('add-voice'),
   instruments: INSTRUMENTS,
   onStatus: (message) => docUi.showStatus(message),
+  // trascinando il cursore del volume, il riascolto in corso cambia subito
+  onVolumePreview: (voiceId, db) => engine?.setVoiceVolume(voiceId, db),
 });
 
 function renderScore() {
@@ -151,8 +176,8 @@ bus.on('note:off', (note) => {
   // In una transizione legata il synth non rilascia: il noteOn successivo farà glide.
   if (!note.transition) engine?.liveNoteOff();
   // Il centro della nota (corretto) + la correzione in uso = altezza realmente cantata.
+  // (La stima serve al synth dal vivo; il tuner mostra lo scarto reale da La = 440 Hz.)
   tuning.observe(note.center + tuning.offset, note.durationMs / 1000);
-  ui.setTuning(tuning.cents);
 });
 
 bus.on('feedback', (feedbackState) => {
@@ -166,7 +191,8 @@ doc.addEventListener('change', () => {
   renderScore();
   ui.setCanPlay(!doc.isEmpty);
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => saveDraft(doc.toJSON()), CONFIG.score.autosaveMs);
+  // la bozza ricorda quali note venivano da una registrazione (non l'audio, troppo grande per il browser)
+  autosaveTimer = setTimeout(() => saveDraft(doc.toJSON({ keepSources: true })), CONFIG.score.autosaveMs);
 });
 
 /**
@@ -206,10 +232,14 @@ async function ensureAudio() {
   const ctx = await initAudioContext();
   if (!engine) {
     engine = new SynthEngine({ ...CONFIG.synth, ...sound });
-    engine.onPlaybackChange = (isPlaying) => ui.setPlaying(isPlaying);
+    engine.onPlaybackChange = (isPlaying) => {
+      ui.setPlaying(isPlaying);
+      if (!isPlaying) stopPlaybackTuner();
+    };
     engine.onPlaybackNote = (id, voiceId) => {
       if (id === null && voiceId === null) playing.clear(); // fine del riascolto
       else playing.set(voiceId, id);
+      if (id !== null && voiceId === tunerVoice?.id) showPlayingNote(id);
       renderScore();
     };
     // La voce live nasce MUTA: si attiva solo quando il FeedbackGuard conferma le cuffie.
@@ -250,7 +280,8 @@ function startAccompaniment(voiceId, startBeat, t0Ctx) {
   if (guard.state.autoDetected === false) {
     return 'L’uscita audio sembra sugli altoparlanti: le altre voci non vengono suonate (finirebbero nel microfono). Usa le cuffie per sentirle.';
   }
-  engine.play(doc.playbackEvents(null, { fromBeat: startBeat, excludeVoiceId: voiceId }), { at: t0Ctx });
+  const { events, clips } = playbackFor(null, { fromBeat: startBeat, excludeVoiceId: voiceId });
+  engine.play(events, { at: t0Ctx, clips });
   return null;
 }
 
@@ -259,12 +290,42 @@ function startAccompaniment(voiceId, startBeat, t0Ctx) {
  * della sessione o con il tempo rilevato. I tempi passano sull'orologio di performance.now(), lo
  * stesso del metronomo, togliendo la latenza del microfono.
  */
-function writeSession(s, notes, startPerfMs) {
+function writeSession(s, notes, startPerfMs, take = null) {
   return writeTranscription(notes, {
     settings: s.settings,
     t0Ms: s.t0Ms,
     originMs: startPerfMs - CONFIG.offline.inputLatencyMs,
+    take,
   });
+}
+
+// ── Voce originale ─────────────────────────────────────────────────────────
+/** AudioBuffer di ogni ripresa, creati alla prima riproduzione (l'audio è in PCM 16 bit nel documento). */
+const takeBuffers = new Map();
+
+function bufferFor(take) {
+  if (!takeBuffers.has(take)) {
+    const { sampleRate, samples } = doc.audio.get(take);
+    const buffer = Tone.getContext().rawContext.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(fromPcm16(samples), 0);
+    takeBuffers.set(take, buffer);
+  }
+  return takeBuffers.get(take);
+}
+
+/**
+ * Cosa suonare: note per il synth e riprese della voce originale (vedi ScoreDocument.playbackPlan).
+ * @param {string|null} fromId
+ * @param {{ fromBeat?:number, excludeVoiceId?:string|null }} [options]
+ */
+function playbackFor(fromId, options = {}) {
+  const { events, clips } = doc.playbackPlan(fromId, options);
+  return { events, clips: clips.map((clip) => ({ ...clip, buffer: bufferFor(clip.take) })) };
+}
+
+/** Conserva l'audio originale di una ripresa (se c'è); restituisce l'id da collegare alle note. */
+function keepAudio(original) {
+  return original && original.samples.length > 0 ? doc.addAudio(original) : null;
 }
 
 /**
@@ -412,7 +473,7 @@ function stop() {
 /**
  * Allo Stop le note della sessione entrano nello spartito, in coda e in un'unica modifica annullabile:
  *   - "Rifinisci allo Stop" attivo: dall'analisi dell'INTERA registrazione, esattamente come
- *     "Carica Audio ALA" su un file (intonazione e contesto di tutta la sessione);
+ *     "Importa audio" su un file (intonazione e contesto di tutta la sessione);
  *   - spento: dalla trascrizione fatta durante il canto, completata con un ultimo giro.
  * Tempo (metronomo spento → rilevato) e quantizzazione (Auto → per movimento) come in writeTranscription.
  *
@@ -457,7 +518,8 @@ async function finishSession(s, capturedPromise) {
     if (captured.truncated) label.push(`Trascritti solo i primi ${CONFIG.offline.maxMinutes} minuti.`);
     // La voce della sessione potrebbe essere stata eliminata nel frattempo (es. Ctrl+Z): si scrive nella voce attiva.
     const voiceId = doc.voiceById(s.voiceId) ? s.voiceId : doc.voice.id;
-    commitTranscription(writeSession(s, notes, captured.startPerfMs), { tuningOffset, label: label.join(' '), voiceId });
+    const take = keepAudio(captured.original); // voce originale per il riascolto (solo in memoria)
+    commitTranscription(writeSession(s, notes, captured.startPerfMs, take), { tuningOffset, label: label.join(' '), voiceId });
   } catch (err) {
     console.error(err);
     docUi.showStatus(`Trascrizione non riuscita: ${err.message}`, { error: true });
@@ -522,7 +584,85 @@ async function togglePlayback() {
   if (doc.isEmpty) return;
   stop();
   await ensureAudio();
-  engine.play(doc.playbackEvents(editor.selectedId));
+  const { events, clips } = playbackFor(editor.selectedId);
+  // In loop il giro dura fino alla fine della battuta dell'ultima nota (vedi ScoreDocument.loopSeconds).
+  engine.play(events, { clips, loop, loopEnd: doc.loopSeconds(editor.selectedId) });
+  startPlaybackTuner();
+}
+
+// ── Tuner durante l'ascolto ────────────────────────────────────────────────
+/** Voce seguita dal tuner nell'ascolto in corso: { id, original } (null se nessuna). */
+let tunerVoice = null;
+/** @type {PitchAnalyzer|null} analisi dell'audio della voce originale seguita */
+let playbackAnalyzer = null;
+
+/**
+ * Il tuner segue la voce attiva (o, se non si sente, la prima voce udibile con note):
+ *   - voce originale: si analizza in tempo reale il SUO audio (non il mix), come il microfono;
+ *   - synth: si mostra la nota suonata, che è sempre intonata.
+ */
+function startPlaybackTuner() {
+  const audible = doc.audibleVoices.filter((v) => v.notes.some((n) => n.midi !== null));
+  const voice = audible.find((v) => v.id === doc.voice.id) ?? audible[0];
+  if (!voice) return;
+  const analyser = engine.monitorVoice(voice.id);
+  tunerVoice = { id: voice.id, original: Boolean(analyser) };
+  ui.setTuner({
+    source: analyser
+      ? `Ascolto: ${voice.name}, voce originale (intonazione reale)`
+      : `Ascolto: ${voice.name}, synth (le note del synth sono sempre intonate)`,
+  });
+  if (!analyser) return;
+  playbackAnalyzer = new PitchAnalyzer(analyser, analyser.context.sampleRate, {
+    gate: new NoiseGate(CONFIG.gate),
+    pitch: CONFIG.pitch,
+    minClarity: CONFIG.pitch.minClarity,
+    onFrame: ({ hz, timeMs }) => {
+      const note = hz !== null ? hzToNote(hz) : null;
+      ui.updatePitch({ exactMidi: note?.exactMidi ?? null, hz, timeMs });
+    },
+  });
+  playbackAnalyzer.start();
+}
+
+/** Nota della partitura che sta suonando nella voce seguita. */
+function showPlayingNote(id) {
+  const note = doc.get(id);
+  if (!note || note.midi === null) return;
+  if (tunerVoice.original) {
+    ui.setWritten(`Nella partitura: ${midiToItalianName(note.midi)}`);
+  } else {
+    ui.updatePitch({ exactMidi: note.midi, hz: midiToHz(note.midi), timeMs: performance.now() });
+  }
+}
+
+function stopPlaybackTuner() {
+  playbackAnalyzer?.stop();
+  playbackAnalyzer = null;
+  if (!tunerVoice) return;
+  tunerVoice = null;
+  if (state !== 'running') ui.setTuner(null); // registrando, il tuner resta sul microfono
+}
+
+/**
+ * Esporta il mix in WAV, come lo si sente con Ascolta dall'inizio: voci originali e synth, Muto e Solo,
+ * strumenti ed effetti. Il rendering è "offline": più veloce del tempo reale, senza suonare nulla.
+ */
+async function exportAudio() {
+  if (doc.isEmpty) {
+    docUi.showStatus('La partitura è vuota: non c’è niente da esportare.');
+    return;
+  }
+  docUi.showStatus('Creazione dell’audio del mix…', { sticky: true });
+  await exportFile(
+    'wav',
+    async () => {
+      const { events, clips } = playbackFor(null);
+      const mix = await renderMix({ events, clips, sound: { ...CONFIG.synth, ...sound } });
+      return new Blob([encodeWav(mix)], { type: 'audio/wav' });
+    },
+    'Audio del mix esportato (WAV).',
+  );
 }
 
 /** Breve arpeggio (Do–Mi–Sol–Do) per sentire lo strumento senza dover cantare. */
@@ -565,7 +705,7 @@ async function openScore(file) {
     engine?.stopPlayback();
     stop();
     doc.load(await readJsonFile(file));
-    docUi.showStatus(`Aperto "${file.name}". Ctrl+Z per tornare allo spartito precedente.`);
+    docUi.showStatus(`Aperto "${file.name}". Ctrl+Z per tornare alla partitura precedente.`);
   } catch (err) {
     console.error(err);
     docUi.showStatus(`Impossibile aprire il file: ${err.message}`, { error: true });
@@ -573,7 +713,7 @@ async function openScore(file) {
 }
 
 /**
- * "Carica Audio ALA": trascrive uno o più file audio scelti dall'utente (vedi music/audioFile.js),
+ * "Importa audio": trascrive uno o più file audio scelti dall'utente (vedi music/audioFile.js),
  * come registrazioni a metronomo spento (tempo rilevato dagli attacchi). Un'unica modifica annullabile.
  *   - un file: le note si aggiungono in coda alla voce attiva, da una battuta nuova;
  *   - più file: una voce per file (col nome del file, poi rinominabile), tutte dalla battuta 1. I file
@@ -592,11 +732,13 @@ async function loadAudio(files) {
   try {
     const revision = doc.revision;
     const results = [];
+    const originals = []; // voce originale di ogni file (48 kHz), conservata solo se la trascrizione viene scritta
     for (const [i, file] of files.entries()) {
       current = `"${file.name}"`;
       const step = files.length > 1 ? `File ${i + 1} di ${files.length}: ` : '';
       docUi.showStatus(`${step}lettura di ${current}…`, { sticky: true });
       const audio = await decodeAudioFile(file, { maxMinutes: CONFIG.offline.maxMinutes });
+      originals.push(audio.original);
       results.push(
         await transcribeInWorker(audio.samples, audio.sampleRate, {}, (p) =>
           docUi.showStatus(`${step}trascrizione di ${current}… ${Math.round(p * 100)}%`, { sticky: true }),
@@ -614,8 +756,9 @@ async function loadAudio(files) {
       return;
     }
 
+    const takes = originals.map((original, i) => (results[i].notes.length > 0 ? keepAudio(original) : null));
     if (files.length === 1) {
-      const transcription = writeTranscription(results[0].notes, { settings: doc.settings });
+      const transcription = writeTranscription(results[0].notes, { settings: doc.settings, take: takes[0] });
       const count = transcription.written.filter((n) => n.midi !== null).length;
       commitTranscription(transcription, {
         label: `Trascritto "${files[0].name}": ${count} note.`,
@@ -627,7 +770,7 @@ async function loadAudio(files) {
 
     const { voices, detectedBpm } = writeTranscriptionVoices(
       results.map((r) => r.notes),
-      { settings: doc.settings },
+      { settings: doc.settings, takes },
     );
     const patch = tempoAndTitle(detectedBpm, null);
     doc.importVoices(
@@ -707,6 +850,15 @@ if (draft) {
   try {
     doc.load(draft);
     doc.clearHistory();
+    // L'audio originale vive solo in memoria: dopo un ricaricamento quelle voci suonano col synth.
+    const lost = doc.voices.filter((v) => doc.lostAudio(v.id)).map((v) => `"${v.name}"`);
+    if (lost.length > 0) {
+      docUi.showStatus(
+        `L’audio originale di ${lost.join(', ')} non c’è più: si conserva solo finché la pagina resta aperta, ` +
+          'o salvando con File › Salva con l’audio originale. Nel riascolto quelle voci usano il synth.',
+        { sticky: true },
+      );
+    }
   } catch (err) {
     console.warn('Bozza non valida, ignorata:', err);
   }

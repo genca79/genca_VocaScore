@@ -4,14 +4,14 @@ import { AUDIO_FILE_ACCEPT } from '../music/audioFile.js';
 
 /**
  * Controlli del documento: titolo, BPM, tempo (indicazione di misura), quantizzazione, metronomo,
- * nomi delle note, e i comandi Nuovo / Apri / Carica Audio ALA / Salva / MusicXML / PDF.
+ * nomi delle note, e i comandi Nuovo / Apri / Importa audio / Salva / MusicXML / PDF.
  * (La chiave è per voce: vedi voicePanel.js.)
  *
  * I campi si aggiornano dal documento a ogni modifica (anche dopo annulla o apri).
  * Il titolo si conferma all'uscita dal campo o con Invio: così ogni lettera digitata
  * non diventa un passo di "annulla".
  */
-export function createDocumentControls(doc, { onNew, onOpen, onLoadAudio, onSave, onExportMusicXml, onExportPdf }) {
+export function createDocumentControls(doc, { onNew, onOpen, onLoadAudio, onSave, onExportMusicXml, onExportPdf, onExportAudio }) {
   const $ = (id) => document.getElementById(id);
   const title = $('score-title');
   const bpm = $('bpm');
@@ -39,19 +39,47 @@ export function createDocumentControls(doc, { onNew, onOpen, onLoadAudio, onSave
   timeSignature.addEventListener('change', () => doc.setSettings({ timeSignature: timeSignature.value }));
   names.addEventListener('change', () => doc.setSettings({ showNoteNames: names.checked }));
 
-  $('new-score').addEventListener('click', onNew);
-  $('save-score').addEventListener('click', onSave);
-  $('export-musicxml').addEventListener('click', onExportMusicXml);
-  const pdfButton = $('export-pdf');
-  pdfButton.addEventListener('click', async () => {
-    // la prima esportazione carica jsPDF: si evita il doppio clic durante l'attesa
-    pdfButton.disabled = true;
-    try {
-      await onExportPdf();
-    } finally {
-      pdfButton.disabled = false;
-    }
+  // Menu File: si chiude dopo ogni scelta, con Esc e cliccando fuori.
+  const fileMenu = $('file-menu');
+  const closeMenu = () => (fileMenu.open = false);
+  fileMenu.addEventListener('click', (e) => e.target.closest('.menu-list button') && closeMenu());
+  document.addEventListener('click', (e) => fileMenu.open && !fileMenu.contains(e.target) && closeMenu());
+  fileMenu.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !fileMenu.open) return;
+    closeMenu();
+    fileMenu.querySelector('summary').focus();
   });
+
+  // Finestre Impostazioni e Aiuto (dialog nativo: Esc chiude, il focus torna al pulsante)
+  for (const [buttonId, dialogId] of [
+    ['open-settings', 'settings-dialog'],
+    ['open-help', 'help-dialog'],
+  ]) {
+    const dialog = $(dialogId);
+    $(buttonId).addEventListener('click', () => dialog.showModal());
+    dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
+  }
+
+  $('new-score').addEventListener('click', onNew);
+  $('save-score').addEventListener('click', () => onSave({ includeAudio: false }));
+  $('save-score-audio').addEventListener('click', () => onSave({ includeAudio: true }));
+  $('export-musicxml').addEventListener('click', onExportMusicXml);
+  // Esportazioni che richiedono qualche secondo (PDF: carica jsPDF; audio: rendering del mix):
+  // il pulsante resta spento durante l'attesa, niente doppio clic.
+  for (const [id, run] of [
+    ['export-pdf', onExportPdf],
+    ['export-audio', onExportAudio],
+  ]) {
+    const button = $(id);
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await run();
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
   $('open-score').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     const [file] = fileInput.files;

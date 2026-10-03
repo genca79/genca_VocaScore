@@ -249,35 +249,39 @@ export function transcribeRhythmVoices(voiceNotes, { settings, t0Ms, latencyMs =
 
 /**
  * Note di una trascrizione (tempi in secondi dall'inizio dell'audio) → note scritte.
- * Usata per la registrazione dal vivo, allo Stop e per "Carica Audio ALA".
+ * Usata per la registrazione dal vivo, allo Stop e per "Importa audio".
  *
  * @param {Array<{ midi:number, start:number, end:number, transition:boolean }>} notes
  * @param {{ settings:{ bpm:number, grid:number|'auto', timeSignature:string, legato?:boolean },
  *           t0Ms?:number|null, originMs?:number }} options
  *   originMs: istante dello 0 dell'audio nella stessa base dei tempi di t0Ms (es. performance.now()
- *   del primo campione catturato); t0Ms: primo movimento del metronomo, null = tempo rilevato
+ *   del primo campione catturato); t0Ms: primo movimento del metronomo, null = tempo rilevato;
+ *   take: id della ripresa (audio originale): ogni nota scritta ricorda da dove viene (`src`)
  */
-export function writeTranscription(notes, { settings, t0Ms = null, originMs = 0 }) {
-  return transcribeRhythm(toTimed(notes, originMs), { settings, t0Ms });
+export function writeTranscription(notes, { settings, t0Ms = null, originMs = 0, take = null }) {
+  return transcribeRhythm(toTimed(notes, originMs, take), { settings, t0Ms });
 }
 
 /**
  * Più trascrizioni che partono nello stesso istante (più file audio caricati insieme) → note scritte
  * per ogni voce, con tempo e zero comuni (vedi transcribeRhythmVoices).
  * @param {Array<Array<{ midi:number, start:number, end:number, transition:boolean }>>} voiceNotes
+ * @param {{ settings:object, t0Ms?:number|null, originMs?:number, takes?:Array<string|null> }} options
+ *   takes: id della ripresa di ogni voce (come `take` in writeTranscription)
  */
-export function writeTranscriptionVoices(voiceNotes, { settings, t0Ms = null, originMs = 0 }) {
+export function writeTranscriptionVoices(voiceNotes, { settings, t0Ms = null, originMs = 0, takes = [] }) {
   return transcribeRhythmVoices(
-    voiceNotes.map((notes) => toTimed(notes, originMs)),
+    voiceNotes.map((notes, i) => toTimed(notes, originMs, takes[i] ?? null)),
     { settings, t0Ms },
   );
 }
 
-function toTimed(notes, originMs) {
+function toTimed(notes, originMs, take) {
   return notes.map((n) => ({
     midi: n.midi,
     startMs: originMs + n.start * 1000,
     endMs: originMs + n.end * 1000,
     transition: n.transition,
+    ...(take ? { src: { take, start: n.start, end: n.end } } : {}),
   }));
 }

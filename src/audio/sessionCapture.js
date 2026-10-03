@@ -28,6 +28,11 @@ export class SessionCapture {
     this.maxSamples = Math.round(this.maxMinutes * 60 * this.sampleRate);
     this.chunks = [];
     this.length = 0;
+    // audio a piena frequenza (voce originale per il riascolto), PCM 16 bit
+    this.rawRate = ctx.sampleRate;
+    this.maxRaw = Math.round(this.maxMinutes * 60 * this.rawRate);
+    this.rawChunks = [];
+    this.rawLength = 0;
     this.truncated = false;
     this.startCtxTime = null;
     this.ended = new Promise((resolve) => (this.resolveEnded = resolve));
@@ -48,6 +53,11 @@ export class SessionCapture {
         else {
           this.chunks.push(data.samples);
           this.length += data.samples.length;
+        }
+      } else if (data.type === 'raw') {
+        if (this.rawLength + data.samples.length <= this.maxRaw) {
+          this.rawChunks.push(data.samples);
+          this.rawLength += data.samples.length;
         }
       } else if (data.type === 'end') this.resolveEnded();
     };
@@ -85,7 +95,10 @@ export class SessionCapture {
 
   /**
    * Ferma la cattura e restituisce l'audio. Va chiamata PRIMA di spegnere il microfono.
-   * @returns {Promise<{ samples:Float32Array, sampleRate:number, startPerfMs:number, truncated:boolean }|null>}
+   * `samples` (~16 kHz, float) è per l'analisi; `original` (piena frequenza, PCM 16 bit) è la voce
+   * originale per il riascolto: stessa linea del tempo, istante 0 = primo campione catturato.
+   * @returns {Promise<{ samples:Float32Array, sampleRate:number, startPerfMs:number, truncated:boolean,
+   *                     original:{ samples:Int16Array, sampleRate:number } }|null>}
    */
   async stop() {
     if (!this.node) return null;
@@ -105,11 +118,20 @@ export class SessionCapture {
     }
     this.chunks = [];
 
+    const raw = new Int16Array(this.rawLength);
+    let rawOffset = 0;
+    for (const chunk of this.rawChunks) {
+      raw.set(chunk, rawOffset);
+      rawOffset += chunk.length;
+    }
+    this.rawChunks = [];
+
     return {
       samples,
       sampleRate: this.sampleRate,
       startPerfMs: this.startPerfMs, // orologio audio → performance.now(), come il metronomo
       truncated: this.truncated,
+      original: { samples: raw, sampleRate: this.rawRate },
     };
   }
 }

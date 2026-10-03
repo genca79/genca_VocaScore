@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ANALYSIS_SAMPLE_RATE, AudioFileError, decodeAudioFile, titleFromFileName, toMono } from '../src/music/audioFile.js';
+import {
+  ANALYSIS_SAMPLE_RATE,
+  AudioFileError,
+  ORIGINAL_SAMPLE_RATE,
+  decodeAudioFile,
+  titleFromFileName,
+  toMono,
+} from '../src/music/audioFile.js';
 import { writeTranscription } from '../src/music/rhythm.js';
 import { restToCompleteMeasure } from '../src/music/recorder.js';
 import { transcribeOffline } from '../src/music/offlineTranscriber.js';
@@ -64,19 +71,20 @@ describe('decodeAudioFile', () => {
    * Il decoder vero esiste solo nel browser: qui un OfflineAudioContext finto verifica la logica
    * attorno (frequenza richiesta, mono, limiti, messaggi). I formati reali vanno provati nel browser.
    */
-  function fakeContext({ channels = [], sampleRate = ANALYSIS_SAMPLE_RATE, fail = false } = {}) {
+  function fakeContext({ channels = [], fail = false } = {}) {
     const created = [];
     class FakeOfflineAudioContext {
       constructor(numberOfChannels, length, rate) {
         created.push(rate);
+        this.rate = rate;
       }
       async decodeAudioData() {
         if (fail) throw new DOMException('Unable to decode audio data', 'EncodingError');
         const length = channels[0]?.length ?? 0;
         return {
           length,
-          sampleRate,
-          duration: length / sampleRate,
+          sampleRate: this.rate, // come il browser: ricampionato alla frequenza del contesto
+          duration: length / ANALYSIS_SAMPLE_RATE, // stessi campioni finti: durata riferita all'analisi
           numberOfChannels: channels.length,
           getChannelData: (c) => channels[c],
         };
@@ -92,9 +100,12 @@ describe('decodeAudioFile', () => {
   it('decodifica alla frequenza di analisi e riduce a mono', async () => {
     const created = fakeContext({ channels: [Float32Array.from([1, 1]), Float32Array.from([0, -1])] });
     const audio = await decodeAudioFile(file);
-    expect(created).toEqual([ANALYSIS_SAMPLE_RATE]); // il browser ricampiona al sampleRate del contesto
+    // due decodifiche: analisi (16 kHz) e voce originale per il riascolto (48 kHz)
+    expect(created).toEqual([ANALYSIS_SAMPLE_RATE, ORIGINAL_SAMPLE_RATE]);
     expect([...audio.samples]).toEqual([0.5, 0]);
     expect(audio.sampleRate).toBe(ANALYSIS_SAMPLE_RATE);
+    expect(audio.original.sampleRate).toBe(ORIGINAL_SAMPLE_RATE);
+    expect([...audio.original.samples]).toEqual([16384, 0]); // mono, PCM 16 bit
   });
 
   it('formato non supportato: messaggio comprensibile', async () => {

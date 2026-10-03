@@ -2,12 +2,16 @@
   --bg: #f6f4ef;
   --panel: #ffffff;
   --ink: #1f2328;
-  --muted: #6a6f76;
+  --muted: #5f646b;
   --line: #e3dfd6;
   --accent: #e8590c;
-  --ok: #2f9e44;
+  --select: #1971c2;
+  --select-tint: #e7f1fb;
+  --ok: #2f9e44; /* solo grafica (battito, livello) */
+  --ok-text: #267a37; /* testo verde: 4,87:1 sul fondo, 5,36:1 con testo bianco */
+  --accent-fill: #c2410c; /* pulsante arancione pieno: 5,18:1 con testo bianco */
   --danger: #c92a2a;
-  --radius: 14px;
+  --radius: 12px;
   color-scheme: light;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   color: var(--ink);
@@ -20,266 +24,312 @@
 
 body {
   margin: 0;
-  padding: 24px 16px 40px;
+  padding: 0 16px 32px;
   background: var(--bg);
 }
 
-.app-header,
-.app,
+.topbar,
+.tuner-panel,
+.workspace,
 .app-footer {
-  max-width: 1240px;
+  max-width: 1320px;
   margin-inline: auto;
 }
 
-.app-header h1 {
-  margin: 0;
-  font-size: 2rem;
-  letter-spacing: -0.02em;
+/* ── Icone (set chiuso, vedi src/icons): decorative, sempre accanto al testo ── */
+.icon {
+  flex: none; /* mai schiacciata in una riga flessibile */
+  inline-size: 1.15em; /* scala con il testo del pulsante */
+  block-size: 1.15em;
+  color: var(--icon-color, currentColor); /* stesso colore dell'etichetta */
 }
 
-.app-header h1 span {
+@media (forced-colors: active) {
+  .icon {
+    --icon-color: CanvasText;
+    color: CanvasText;
+  }
+}
+
+/* ── Pulsanti ──────────────────────────────────────────── */
+.btn,
+.menu-list button,
+.tool-group button,
+.voice-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.btn:hover,
+.tool-group button:hover:not(:disabled),
+.voice-button:hover:not(:disabled) {
+  border-color: #c9c3b6;
+}
+
+.btn:disabled,
+.tool-group button:disabled,
+.voice-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-small {
+  padding: 5px 10px;
+  font-size: 0.85rem;
+}
+
+:is(.btn, .menu-list button, .tool-group button, .voice-button, summary, input, select):focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Azione principale: Registra (Stop in rosso mentre registra) */
+.btn-record {
+  padding: 10px 20px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.btn-record.is-running {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn-record:disabled {
+  cursor: progress;
+}
+
+.btn-play {
+  padding: 10px 18px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.btn-play.is-playing {
+  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+}
+
+/* ── Barra in alto ─────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 12px 0 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.topbar-row + .topbar-row {
+  margin-top: 10px;
+}
+
+.brand {
+  margin: 0 8px 0 0;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.brand span {
   color: var(--accent);
 }
 
-.app-header h1 .brand-prefix {
+.brand .brand-prefix {
   margin-right: 0.15em;
   color: var(--ink);
   letter-spacing: 0.04em;
 }
 
-.tagline {
-  margin: 4px 0 20px;
+.title-field {
+  display: flex;
+  flex: 1 1 220px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title-label {
+  font-size: 0.85rem;
   color: var(--muted);
 }
 
-/*
- * Layout a due righe:
- *   riga 1 → Controlli · Accordatore · Suono Synth
- *   riga 2 → Spartito (tutta la larghezza)
- * Su schermi medi il Suono Synth va sotto a tutta larghezza; su telefono tutto in colonna.
- */
-.app {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
-  align-items: start; /* ogni pannello alto quanto il suo contenuto, niente spazi vuoti */
-  gap: 16px;
-}
-
-.panel {
+.score-title {
+  flex: 1;
   min-width: 0;
+  padding: 6px 8px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 18px;
+  border-radius: 8px;
 }
 
-.score-panel {
-  grid-column: 1 / -1;
+.toolbar-group {
+  display: flex;
+  gap: 6px;
 }
 
-@media (max-width: 1080px) {
-  .app {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  .sound-panel {
-    grid-column: 1 / -1;
-  }
-}
-
-@media (max-width: 640px) {
-  .app {
-    grid-template-columns: 1fr;
-  }
-}
-
-.panel-header {
+.tempo {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 8px 14px;
+  padding: 4px 12px;
+  border-inline: 1px solid var(--line);
 }
 
-.panel-header h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.panel-actions {
+.actions-end {
   display: flex;
   gap: 8px;
+  margin-inline-start: auto;
 }
 
-/* ── Suono Synth (compatto) ────────────────────────────── */
-.sound-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: 10px 12px;
-  margin-top: 12px;
-}
-
-/* Cursori su una riga: etichetta a sinistra, cursore a destra.
-   (selettore .field.field-slider: deve prevalere su .field, definita più sotto) */
-.field.field-slider {
-  grid-column: 1 / -1;
-  flex-direction: row;
+.inline-field {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-}
-
-.field.field-slider span {
-  flex: 0 0 6.2em;
-}
-
-.btn-small {
-  padding: 4px 10px;
-  font-size: 0.85rem;
-}
-
-@media (max-width: 1080px) {
-  /* a tutta larghezza c'è spazio: tutti i controlli su una riga */
-  .sound-grid {
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  }
-
-  .field.field-slider {
-    grid-column: auto;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-  }
-
-  .field.field-slider span {
-    flex: none;
-  }
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   color: var(--muted);
 }
 
-.field select,
-.field input[type='range'] {
-  width: 100%;
+.inline-field input[type='number'] {
+  width: 4.5em;
+}
+
+.inline-field input[type='number'],
+.inline-field select {
+  padding: 6px 8px;
   font: inherit;
   color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.inline-field input[type='range'] {
   accent-color: var(--accent);
 }
 
-.field select {
-  padding: 7px 8px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-/* ── Controlli ─────────────────────────────────────────── */
-.btn-primary {
-  width: 100%;
-  padding: 14px 18px;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: #fff;
-  background: var(--ink);
-  border: 0;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-primary.is-running {
-  background: var(--danger);
-}
-
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-.btn-primary:focus-visible,
-.btn-secondary:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.btn-secondary {
-  padding: 6px 14px;
-  font: inherit;
-  color: var(--ink);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.btn-secondary:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btn-play.is-playing {
-  color: #fff;
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-/* Impostazioni di registrazione, sotto "Avvia microfono" */
-.rec-settings {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  align-items: end;
-  gap: 10px 12px;
-  margin-top: 14px;
-}
-
-.rec-settings input[type='number'],
-.rec-settings select {
-  width: 100%;
-  padding: 7px 8px;
-  font: inherit;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.rec-settings :disabled {
+.inline-field :disabled,
+.switch :disabled + span {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.rec-metronome {
-  grid-column: span 2; /* le caselle hanno etichette lunghe: due colonne ciascuna */
-  padding-bottom: 4px;
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
 }
 
-.tuning-info {
-  margin: 12px 0 0;
-  font-size: 0.8rem;
+.switch input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+/* Menu File: un elenco a scomparsa (details), si chiude da solo dopo la scelta */
+.menu {
+  position: relative;
+}
+
+.menu > summary {
+  list-style: none;
+}
+
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-list {
+  position: absolute;
+  inset-inline-end: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  margin-top: 6px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+}
+
+.menu-list button {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  width: 100%;
+  text-align: start;
+  border-color: transparent;
+}
+
+.menu-list button:hover {
+  background: var(--bg);
+}
+
+.menu-list small {
+  flex-basis: 100%;
+  padding-inline-start: 1.6em;
+  font-size: 0.78rem;
   color: var(--muted);
 }
 
-.tuning-info.is-active {
-  color: var(--ink);
-}
-
-.status-row {
+/* Una sola riga di stato */
+.statusbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 4px 16px;
+  min-height: 1.6em;
+  margin-top: 8px;
+  font-size: 0.9rem;
 }
 
 .status {
   margin: 0;
   color: var(--muted);
+}
+
+.score-status {
+  margin: 0;
+  color: var(--ok-text);
+}
+
+.score-status.is-error {
+  color: var(--danger);
+}
+
+.error {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  color: var(--danger);
+  background: #fff5f5;
+  border: 1px solid #ffc9c9;
+  border-radius: 8px;
 }
 
 .beat-indicator {
@@ -308,121 +358,16 @@ body {
   background: var(--ink);
 }
 
-.error {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  color: var(--danger);
-  background: #fff5f5;
-  border: 1px solid #ffc9c9;
-  border-radius: 8px;
-}
-
-.feedback {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
-}
-
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.switch input {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent);
-}
-
-.badge {
-  padding: 2px 10px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--muted);
-  background: var(--bg);
-  border-radius: 999px;
-}
-
-.badge.is-on {
-  color: #fff;
-  background: var(--ok);
-}
-
-.hint {
-  flex-basis: 100%;
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.hint.is-warning {
-  color: var(--danger);
-  font-weight: 600;
-}
-
-/* ── Nota live ─────────────────────────────────────────── */
-.note-display {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-}
-
-.note-name {
-  min-width: 3ch;
-  font-size: 3.5rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-.note-meta {
-  display: flex;
-  flex-direction: column;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.tuner {
-  position: relative;
-  height: 56px;
-  margin: 18px 0 12px;
-  border-bottom: 2px solid var(--line);
-}
-
-.tuner-scale {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
-.tuner-needle {
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  width: 3px;
-  height: 40px;
-  background: var(--accent);
-  border-radius: 2px;
-  transform-origin: bottom center;
-  transform: translateX(-50%) rotate(0deg);
-  transition: transform 60ms linear;
-}
-
-.tuner-needle.is-in-tune {
-  background: var(--ok);
-}
-
 .meter-row {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.meter-caption {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .meter {
@@ -452,6 +397,7 @@ body {
 .meter-label {
   font-size: 0.8rem;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .gate-led {
@@ -466,71 +412,159 @@ body {
   box-shadow: 0 0 8px var(--ok);
 }
 
-/* ── Spartito ──────────────────────────────────────────── */
-.score-title {
-  flex: 1 1 240px;
+.hint.is-warning {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ── Area di lavoro: Voci a sinistra, partitura al centro ── */
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.voices-panel,
+.score-area {
   min-width: 0;
-  padding: 4px 0;
-  font: inherit;
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: var(--ink);
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
-}
-
-.score-title:hover,
-.score-title:focus {
-  border-bottom-color: var(--line);
-  outline: none;
-}
-
-.score-title:focus-visible {
-  border-bottom-color: var(--accent);
-}
-
-.panel-actions {
-  flex-wrap: wrap;
-}
-
-.score-settings {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 22px;
-  margin-top: 14px;
-}
-
-.field-inline {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-
-.field-inline input[type='number'] {
-  width: 5.5em;
-  padding: 6px 8px;
-  font: inherit;
-  color: var(--ink);
+  padding: 14px;
   background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.voices-panel h2 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.voice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.voice-row {
+  padding: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
 }
 
-.field-inline select {
-  width: auto;
+/* voce attiva: dove si registra e cosa si modifica */
+.voice-row.is-active {
+  background: var(--select-tint);
+  border-color: var(--select);
 }
 
-/* ── Barra di modifica ─────────────────────────────────── */
+.voice-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-active input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--select);
+}
+
+.voice-name {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.voice-mix {
+  display: flex;
+  flex-wrap: nowrap; /* Muto, Solo e strumento sempre sulla stessa riga */
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.voice-mix .voice-button {
+  flex: none;
+  padding-inline: 7px;
+}
+
+.voice-button {
+  padding: 4px 9px;
+  font-size: 0.82rem;
+}
+
+.voice-toggle.is-on {
+  color: #fff;
+  background: var(--select);
+  border-color: var(--select);
+}
+
+.voice-instrument {
+  flex: 1 1 0; /* occupa lo spazio rimasto; il nome lungo si tronca, il menu aperto lo mostra intero */
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.voice-warning {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+
+.voice-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.voice-edit .inline-field {
+  font-size: 0.82rem;
+}
+
+.voice-edit select {
+  padding: 4px 6px;
+  font-size: 0.82rem;
+}
+
+/* Barra di modifica: sempre allo stesso posto, attiva solo con una nota selezionata */
 .edit-toolbar {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px 14px;
-  margin-top: 14px;
-  padding: 10px;
+  padding: 8px 10px;
   background: var(--bg);
   border-radius: 10px;
+}
+
+.selection-info {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.selection-info.is-empty {
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .tool-group {
@@ -540,64 +574,30 @@ body {
 }
 
 .tool-group button {
-  min-width: 2.6em;
   padding: 5px 9px;
-  font: inherit;
-  font-size: 0.85rem;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  cursor: pointer;
-}
-
-.tool-group button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  font-size: 0.84rem;
 }
 
 .tool-group button.is-active {
   color: #fff;
-  background: #1971c2;
-  border-color: #1971c2;
+  background: var(--select);
+  border-color: var(--select);
 }
 
-.tool-group button:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 1px;
+/* Figure musicali dal font Bravura (già incluso per il pentagramma), sempre col nome accanto */
+.figure {
+  font-family: Bravura, serif;
+  font-size: 1.15em;
+  line-height: 0;
+  position: relative;
+  top: 0.12em;
 }
 
-.selection-row {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 4px 16px;
-  min-height: 1.3em;
-  margin: 10px 0 4px;
-  font-size: 0.85rem;
-}
-
-.selection-info {
-  color: var(--muted);
-}
-
-.score-status {
-  color: var(--ok);
-}
-
-.score-status.is-error {
-  color: var(--danger);
-}
-
-.shortcuts {
-  margin-top: 8px;
-}
-
-/* ── Spartito ──────────────────────────────────────────── */
 .score {
   width: 100%;
   min-height: 190px;
   max-height: 70vh;
+  margin-top: 10px;
   overflow: auto;
 }
 
@@ -611,111 +611,285 @@ body {
 }
 
 .app-footer {
-  margin-top: 24px;
+  margin-top: 20px;
   font-size: 0.85rem;
   color: var(--muted);
   text-align: center;
 }
 
-/* ── Voci della partitura ──────────────────────────────── */
-.voices {
-  margin: 14px 0 0;
-  padding: 10px 12px 12px;
+/* ── Finestre (Impostazioni, Aiuto) ────────────────────── */
+.dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 18px 20px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.dialog h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.dialog h3 {
+  margin: 16px 0 6px;
+  font-size: 1rem;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 10px 14px 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
 }
 
-.voices legend {
+.settings-group legend {
   padding: 0 6px;
+  font-weight: 600;
+}
+
+.help {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.sound-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 16px;
+  width: 100%;
+}
+
+.help-steps {
+  margin: 0;
+  padding-inline-start: 1.3em;
+  line-height: 1.6;
+}
+
+.shortcuts {
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.shortcuts th,
+.shortcuts td {
+  padding: 4px 10px 4px 0;
+  text-align: start;
+  vertical-align: top;
+}
+
+.shortcuts th {
+  white-space: nowrap;
+}
+
+/* ── Schermi stretti ───────────────────────────────────── */
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: 1fr; /* le Voci vanno sopra la partitura */
+  }
+
+  .tuner-main {
+    grid-template-columns: 1fr;
+  }
+
+  .actions-end {
+    margin-inline-start: 0;
+  }
+
+  .tempo {
+    padding: 0;
+    border: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beat-dot,
+  .tuner-marker {
+    transition: none;
+  }
+}
+
+/* Pulsante a due stati (Loop): acceso = pieno; lo stato è anche in aria-pressed */
+.btn-toggle[aria-pressed='true'] {
+  color: #fff;
+  background: var(--select);
+  border-color: var(--select);
+}
+
+/* Volume della voce: etichetta · cursore · valore in dB */
+.voice-volume {
+  display: flex;
+  margin-top: 6px;
+  font-size: 0.82rem;
+}
+
+.voice-volume input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-volume-value {
+  min-width: 3.6em;
+  color: var(--ink);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Registra e Importa audio: due alternative affiancate, stessa altezza */
+.action-pair {
+  display: flex;
+  gap: 6px;
+  padding-inline-end: 12px;
+  border-inline-end: 1px solid var(--line);
+}
+
+.btn-import {
+  padding: 10px 16px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* ── Tuner (registrando: microfono; ascoltando: voce attiva) ── */
+.tuner-panel {
+  margin-top: 12px;
+  padding: 12px 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.tuner-source {
+  margin: 0 0 6px;
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--muted);
 }
 
-.voice-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 10px;
+.tuner-main {
+  display: grid;
+  grid-template-columns: minmax(7.5em, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 24px;
 }
 
-.voice-row {
+.tuner-note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.note-name {
+  min-width: 3ch;
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.note-sci {
+  font-size: 1rem;
+  color: var(--muted);
+}
+
+/* Barra a zone: rosso | giallo | verde (±10 cent) | giallo | rosso, scala ±50 cent */
+.tuner-track {
+  position: relative;
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #ffe3e3 0 25%,
+    #fff3bf 25% 40%,
+    #d3f9d8 40% 60%,
+    #fff3bf 60% 75%,
+    #ffe3e3 75% 100%
+  );
+  border: 1px solid var(--line);
+}
+
+.tuner-center {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 50%;
+  width: 2px;
+  background: var(--muted);
+  transform: translateX(-50%);
+}
+
+.tuner-marker {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  left: 50%;
+  width: 6px;
+  background: var(--ink);
+  border: 1px solid #fff;
+  border-radius: 3px;
+  transform: translateX(-50%);
+  transition: left 80ms linear;
+}
+
+.tuner-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.tuner-verdict {
+  margin: 6px 0 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.tuner-verdict.is-ok {
+  color: var(--ok-text);
+}
+
+.tuner-verdict.is-near {
+  color: #8a5a00; /* 5,93:1 sul pannello */
+}
+
+.tuner-verdict.is-off {
+  color: var(--danger);
+}
+
+.tuner-details {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  gap: 4px 16px;
+  margin: 2px 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
-/* voce attiva: dove si registra e cosa si modifica */
-.voice-row.is-active {
-  background: #e7f1fb;
-  border-color: #1971c2;
+#mic-level {
+  margin-top: 10px;
 }
 
-.voice-active {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.tuner-panel .hint {
+  margin: 8px 0 0;
   font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.voice-active input {
-  width: 18px;
-  height: 18px;
-  accent-color: #1971c2;
-}
-
-.voice-name {
-  flex: 1 1 9em;
-  min-width: 7em;
-  padding: 5px 8px;
-  font: inherit;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-}
-
-.voice-select {
-  padding: 5px 6px;
-  font: inherit;
-  font-size: 0.85rem;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-}
-
-.voice-button {
-  padding: 5px 10px;
-  font: inherit;
-  font-size: 0.85rem;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  cursor: pointer;
-}
-
-.voice-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.voice-toggle.is-on {
-  color: #fff;
-  background: #1971c2;
-  border-color: #1971c2;
-}
-
-.voice-name:focus-visible,
-.voice-select:focus-visible,
-.voice-button:focus-visible,
-.voice-active input:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 1px;
 }

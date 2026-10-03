@@ -154,3 +154,14 @@ describe('più voci insieme (stesso orologio)', () => {
     expect(transcribeRhythmVoices([soprano, []], { settings: SETTINGS, t0Ms: null }).voices[1]).toEqual([]);
   });
 });
+
+describe('collegamento all’audio originale (src)', () => {
+  it('ogni nota scritta ricorda la sua ripresa e i tempi cantati', async () => {
+    const { writeTranscription } = await import('../src/music/rhythm.js');
+    const notes = [0, 1, 2, 3, 4].map((i) => ({ midi: 60 + i, start: 1 + i * 0.6, end: 1.5 + i * 0.6, transition: false }));
+    const { written } = writeTranscription(notes, { settings: SETTINGS, take: 't7' });
+    const pitched = written.filter((n) => n.midi !== null);
+    expect(pitched.map((n) => n.src)).toEqual(notes.map((n) => ({ take: 't7', start: n.start, end: n.end })));
+    expect(written.filter((n) => n.midi === null).every((n) => n.src === undefined)).toBe(true);
+  });
+});

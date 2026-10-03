@@ -47,6 +47,14 @@ export function midiToNoteName(midi) {
   return `${NOTE_NAMES[pitchClass]}${octave}`;
 }
 
+export const ITALIAN_NOTE_NAMES = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si'];
+
+/** Numero MIDI intero → nome italiano con l'ottava scientifica (60 → "Do4", 69 → "La4", 70 → "La#4"). */
+export function midiToItalianName(midi) {
+  const pitchClass = ((midi % 12) + 12) % 12;
+  return `${ITALIAN_NOTE_NAMES[pitchClass]}${Math.floor(midi / 12) - 1}`;
+}
+
 /**
  * Analisi completa di una frequenza.
  *
